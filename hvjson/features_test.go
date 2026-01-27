@@ -115,7 +115,7 @@ func TestUseInt64(t *testing.T) {
 		t.Errorf("Expected 3.14, got %f", floatVal)
 	}
 
-	t.Logf("UseInt64: int_val=%T(%v), float_val=%T(%v)", 
+	t.Logf("UseInt64: int_val=%T(%v), float_val=%T(%v)",
 		m["int_val"], m["int_val"], m["float_val"], m["float_val"])
 }
 

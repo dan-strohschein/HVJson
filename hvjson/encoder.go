@@ -57,15 +57,15 @@ func init() {
 }
 
 type Encoder struct {
-	buf            []byte
-	scratch        [256]byte // Pre-allocated scratch space to avoid small allocations
-	config         *Config
-	depth          int
-	indentLevel    int // Current indentation level for MarshalIndent
+	buf         []byte
+	scratch     [256]byte // Pre-allocated scratch space to avoid small allocations
+	config      *Config
+	depth       int
+	indentLevel int // Current indentation level for MarshalIndent
 	// Inline pointer tracking for cycle detection (avoids map allocation for simple structs)
-	ptrSeenInline  [ptrSeenInlineSize]uintptr
-	ptrSeenCount   int
-	ptrSeen        map[uintptr]bool // Fallback for complex/deeply nested structures
+	ptrSeenInline [ptrSeenInlineSize]uintptr
+	ptrSeenCount  int
+	ptrSeen       map[uintptr]bool // Fallback for complex/deeply nested structures
 }
 
 var encoderPool = sync.Pool{
@@ -117,6 +117,17 @@ func (e *Encoder) Release() {
 	// Don't return buffer to pool - it's used by the result
 	e.buf = nil
 	encoderPool.Put(e)
+}
+
+// isBufferUsingScratch checks if the current buffer points to scratch space
+func (e *Encoder) isBufferUsingScratch() bool {
+	if len(e.buf) == 0 || cap(e.buf) == 0 {
+		return false
+	}
+	bufPtr := uintptr(unsafe.Pointer(&e.buf[0]))
+	scratchStart := uintptr(unsafe.Pointer(&e.scratch[0]))
+	scratchEnd := scratchStart + uintptr(len(e.scratch))
+	return bufPtr >= scratchStart && bufPtr < scratchEnd
 }
 
 // writeNewlineIndent writes a newline and the current indentation.
@@ -418,7 +429,7 @@ func formatInt64Fast(i int64, buf []byte) int {
 	// Shift to beginning if needed
 	if pos > 0 {
 		n := len(buf) - pos
-		copy(buf[0:], buf[pos:len(buf)])
+		copy(buf[0:], buf[pos:])
 		return n
 	}
 	return len(buf) - pos
@@ -433,8 +444,10 @@ func (e *Encoder) encodeInt(i int64) error {
 	}
 
 	// Use SIMD-optimized integer formatting
-	n := simd.FormatInt64(i, e.scratch[:20])
-	e.buf = append(e.buf, e.scratch[:n]...)
+	// Create temporary buffer to avoid corrupting e.buf if it's using scratch space
+	var tempBuf [20]byte
+	n := simd.FormatInt64(i, tempBuf[:20])
+	e.buf = append(e.buf, tempBuf[:n]...)
 	return nil
 }
 
@@ -458,7 +471,7 @@ func formatUint64Fast(u uint64, buf []byte) int {
 	// Shift to beginning if needed
 	if pos > 0 {
 		n := len(buf) - pos
-		copy(buf[0:], buf[pos:len(buf)])
+		copy(buf[0:], buf[pos:])
 		return n
 	}
 	return len(buf) - pos
@@ -473,8 +486,10 @@ func (e *Encoder) encodeUint(u uint64) error {
 	}
 
 	// Use SIMD-optimized integer formatting
-	n := simd.FormatUint64(u, e.scratch[:20])
-	e.buf = append(e.buf, e.scratch[:n]...)
+	// Create temporary buffer to avoid corrupting e.buf if it's using scratch space
+	var tempBuf [20]byte
+	n := simd.FormatUint64(u, tempBuf[:20])
+	e.buf = append(e.buf, tempBuf[:n]...)
 	return nil
 }
 
@@ -482,11 +497,12 @@ func (e *Encoder) encodeFloat(f float64, is32bit bool) error {
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return &SyntaxError{Code: ErrorInvalidValue, Message: "invalid float value (NaN or Inf)"}
 	}
-	
+
 	// Use SIMD-optimized float formatting (requires 24-byte buffer)
-	// FormatFloat64 returns bytes written to scratch buffer
-	n := simd.FormatFloat64(f, e.scratch[:24])
-	e.buf = append(e.buf, e.scratch[:n]...)
+	// Create temporary buffer to avoid corrupting e.buf if it's using scratch space
+	var tempBuf [24]byte
+	n := simd.FormatFloat64(f, tempBuf[:24])
+	e.buf = append(e.buf, tempBuf[:n]...)
 	return nil
 }
 
@@ -894,8 +910,9 @@ func (e *Encoder) encodeIntFast(i int64) ([]byte, error) {
 		return e.buf, nil
 	}
 	// Use SIMD-optimized integer formatting
-	n := simd.FormatInt64(i, e.scratch[:20])
-	e.buf = append(e.buf, e.scratch[:n]...)
+	var tempBuf [20]byte
+	n := simd.FormatInt64(i, tempBuf[:20])
+	e.buf = append(e.buf, tempBuf[:n]...)
 	return e.buf, nil
 }
 
@@ -906,8 +923,9 @@ func (e *Encoder) encodeUintFast(u uint64) ([]byte, error) {
 		return e.buf, nil
 	}
 	// Use SIMD-optimized integer formatting
-	n := simd.FormatUint64(u, e.scratch[:20])
-	e.buf = append(e.buf, e.scratch[:n]...)
+	var tempBuf [20]byte
+	n := simd.FormatUint64(u, tempBuf[:20])
+	e.buf = append(e.buf, tempBuf[:n]...)
 	return e.buf, nil
 }
 
@@ -916,8 +934,9 @@ func (e *Encoder) encodeFloatFast(f float64, is32bit bool) ([]byte, error) {
 		return nil, &SyntaxError{Code: ErrorInvalidValue, Message: "invalid float value (NaN or Inf)"}
 	}
 	// Use SIMD-optimized float formatting (requires 24-byte buffer)
-	n := simd.FormatFloat64(f, e.scratch[:24])
-	e.buf = append(e.buf, e.scratch[:n]...)
+	var tempBuf [24]byte
+	n := simd.FormatFloat64(f, tempBuf[:24])
+	e.buf = append(e.buf, tempBuf[:n]...)
 	return e.buf, nil
 }
 
