@@ -1,0 +1,76 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/dan-strohschein/HVJson/hvjson
+cpu: Apple M3 Pro
+BenchmarkMarshalStruct-12             	 8209969	       135.4 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9150057	       131.6 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9238524	       129.2 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9216896	       129.9 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9119011	       131.6 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9227704	       130.6 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9125650	       130.6 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9219946	       131.0 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9090613	       131.5 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9097933	       131.5 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8704087	       136.2 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8656652	       136.9 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8775230	       137.3 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8713204	       136.7 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8693084	       136.8 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8676060	       137.6 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8651451	       137.3 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8523236	       136.7 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 7721136	       138.5 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8547322	       138.5 ns/op	     128 B/op	       2 allocs/op
+BenchmarkUnmarshalStruct-12           	 2986591	       397.6 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 3039846	       395.0 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 3039118	       397.0 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 3031548	       408.1 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 3022789	       394.4 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 3019302	       399.1 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 2998484	       397.0 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 3016489	       398.2 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 3026244	       411.6 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 2978799	       397.4 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1703656	       687.0 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1725220	       695.9 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1712304	       687.1 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1728842	       690.6 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1700179	       700.8 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1711104	       707.7 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1707834	       706.2 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1697182	       706.4 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1709857	       707.0 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1708789	       702.2 ns/op	     360 B/op	      11 allocs/op
+BenchmarkStreamingEncoder-12          	 8294356	       143.1 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 7989456	       145.2 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8223129	       144.8 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8239095	       145.4 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8111032	       145.5 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8207217	       145.2 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8228526	       145.8 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8161440	       143.7 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8382741	       145.6 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8148762	       143.7 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingDecoder-12          	 1578158	       760.4 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1568830	       755.3 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1579161	       760.4 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1578436	       760.6 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1547539	       774.5 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1570084	       771.6 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1526931	       755.9 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1547900	       758.2 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1573159	       758.3 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1578277	       763.6 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkFastMarshalStruct-12         	 8903606	       134.5 ns/op	     224 B/op	       3 allocs/op
+BenchmarkFastMarshalStruct-12         	 8971886	       135.2 ns/op	     224 B/op	       3 allocs/op
+BenchmarkFastMarshalStruct-12         	 8837206	       135.6 ns/op	     224 B/op	       3 allocs/op
+BenchmarkFastMarshalStruct-12         	 8818465	       134.8 ns/op	     224 B/op	       3 allocs/op
+BenchmarkFastMarshalStruct-12         	 8804888	       141.1 ns/op	     224 B/op	       3 allocs/op
+BenchmarkFastMarshalStruct-12         	 8840161	       134.4 ns/op	     224 B/op	       3 allocs/op
+BenchmarkFastMarshalStruct-12         	 8864169	       136.2 ns/op	     224 B/op	       3 allocs/op
+BenchmarkFastMarshalStruct-12         	 8725042	       135.9 ns/op	     224 B/op	       3 allocs/op
+BenchmarkFastMarshalStruct-12         	 8800981	       135.4 ns/op	     224 B/op	       3 allocs/op
+BenchmarkFastMarshalStruct-12         	 8808628	       136.2 ns/op	     224 B/op	       3 allocs/op
+PASS
+ok  	github.com/dan-strohschein/HVJson/hvjson	108.159s

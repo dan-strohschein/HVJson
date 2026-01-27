@@ -1,0 +1,36 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/dan-strohschein/HVJson/hvjson
+cpu: Apple M3 Pro
+BenchmarkMarshalStruct-12             	 8042592	       130.7 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 7710297	       130.7 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9296497	       129.1 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9234421	       128.4 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct-12             	 9223108	       128.2 ns/op	     160 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8606713	       139.7 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8584243	       138.2 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8438887	       138.7 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8253025	       138.4 ns/op	     128 B/op	       2 allocs/op
+BenchmarkMarshalStruct_StdLib-12      	 8652184	       137.4 ns/op	     128 B/op	       2 allocs/op
+BenchmarkUnmarshalStruct-12           	 3022561	       395.4 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 3041389	       398.9 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 3023280	       399.4 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 3015166	       454.7 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct-12           	 2649312	       448.5 ns/op	     280 B/op	      10 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1692382	       689.8 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1718097	       687.7 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1717686	       690.5 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1705042	       692.6 ns/op	     360 B/op	      11 allocs/op
+BenchmarkUnmarshalStruct_StdLib-12    	 1723671	       696.6 ns/op	     360 B/op	      11 allocs/op
+BenchmarkStreamingEncoder-12          	 7747692	       144.3 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8332348	       143.6 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8124950	       143.3 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8494046	       143.1 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingEncoder-12          	 8398920	       143.4 ns/op	     161 B/op	       3 allocs/op
+BenchmarkStreamingDecoder-12          	 1594522	       747.7 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1595134	       756.6 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1596064	       746.8 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1587489	       764.0 ns/op	    4408 B/op	      12 allocs/op
+BenchmarkStreamingDecoder-12          	 1584145	       764.2 ns/op	    4408 B/op	      12 allocs/op
+PASS
+ok  	github.com/dan-strohschein/HVJson/hvjson	47.276s
