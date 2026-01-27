@@ -28,9 +28,12 @@ type fieldsCache struct {
 var (
 	fieldsCacheMu sync.RWMutex
 	fieldsMap     = make(map[reflect.Type]*fieldsCache)
+	buildOnceMu   sync.Mutex
+	buildOnce     = make(map[reflect.Type]*sync.Once)
 )
 
 func getCachedFields(t reflect.Type) *fieldsCache {
+	// Fast path: check if already cached
 	fieldsCacheMu.RLock()
 	cache, ok := fieldsMap[t]
 	fieldsCacheMu.RUnlock()
@@ -39,11 +42,28 @@ func getCachedFields(t reflect.Type) *fieldsCache {
 		return cache
 	}
 
-	cache = buildFieldsCache(t)
+	// Slow path: ensure only one goroutine builds cache for this type
+	// This prevents writer starvation under high concurrency
+	buildOnceMu.Lock()
+	once, exists := buildOnce[t]
+	if !exists {
+		once = &sync.Once{}
+		buildOnce[t] = once
+	}
+	buildOnceMu.Unlock()
 
-	fieldsCacheMu.Lock()
-	fieldsMap[t] = cache
-	fieldsCacheMu.Unlock()
+	// Only one goroutine will execute this block per type
+	once.Do(func() {
+		built := buildFieldsCache(t)
+		fieldsCacheMu.Lock()
+		fieldsMap[t] = built
+		fieldsCacheMu.Unlock()
+	})
+
+	// Read the now-cached value
+	fieldsCacheMu.RLock()
+	cache = fieldsMap[t]
+	fieldsCacheMu.RUnlock()
 
 	return cache
 }

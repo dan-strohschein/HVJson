@@ -10,18 +10,42 @@ import (
 type encoderFunc func(e *Encoder, ptr unsafe.Pointer) error
 
 var (
-	encoderFuncCache sync.Map // map[reflect.Type]encoderFunc
+	encoderFuncCache      sync.Map // map[reflect.Type]encoderFunc
+	encoderCompileOnceMu  sync.Mutex
+	encoderCompileOnce    = make(map[reflect.Type]*sync.Once)
 )
 
 // getEncoderFunc returns a pre-compiled encoder for the given type
+// Uses sync.Once to prevent duplicate compilation under high concurrency
 func getEncoderFunc(t reflect.Type) encoderFunc {
+	// Fast path: check if already compiled
 	if fn, ok := encoderFuncCache.Load(t); ok {
 		return fn.(encoderFunc)
 	}
 
-	fn := compileEncoderFunc(t)
-	encoderFuncCache.Store(t, fn)
-	return fn
+	// Slow path: ensure only one goroutine compiles encoder for this type
+	encoderCompileOnceMu.Lock()
+	once, exists := encoderCompileOnce[t]
+	if !exists {
+		once = &sync.Once{}
+		encoderCompileOnce[t] = once
+	}
+	encoderCompileOnceMu.Unlock()
+
+	// Only one goroutine will execute this block per type
+	var compiled encoderFunc
+	once.Do(func() {
+		compiled = compileEncoderFunc(t)
+		encoderFuncCache.Store(t, compiled)
+	})
+
+	// If another goroutine compiled it, load from cache
+	if compiled == nil {
+		fn, _ := encoderFuncCache.Load(t)
+		compiled = fn.(encoderFunc)
+	}
+
+	return compiled
 }
 
 // compileEncoderFunc generates an optimized encoder for a type
