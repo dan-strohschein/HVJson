@@ -2,5 +2,7 @@ github.com/dan-strohschein/syndrdb-simd v0.0.0-20260127041301-f5a4c82736e3 h1:zx
 github.com/dan-strohschein/syndrdb-simd v0.0.0-20260127041301-f5a4c82736e3/go.mod h1:3kyQj8tYOR+3xCfy+G4TmPRdBwYqYsfztuxEeGyT6eY=
 github.com/dan-strohschein/syndrdb-simd v0.0.2 h1:ALrxta3rgZWHqlpd18GK6gpKSim5lxU2vAs1uZrtVbo=
 github.com/dan-strohschein/syndrdb-simd v0.0.2/go.mod h1:3kyQj8tYOR+3xCfy+G4TmPRdBwYqYsfztuxEeGyT6eY=
+github.com/dan-strohschein/syndrdb-simd v0.0.3 h1:LNmI2ukgxVGbAACKbYwo9cfZTJcy5GmisRvtdOfaaEY=
+github.com/dan-strohschein/syndrdb-simd v0.0.3/go.mod h1:3kyQj8tYOR+3xCfy+G4TmPRdBwYqYsfztuxEeGyT6eY=
 golang.org/x/sys v0.40.0 h1:DBZZqJ2Rkml6QMQsZywtnjnnGvHza6BTfYFWY9kjEWQ=
 golang.org/x/sys v0.40.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=
