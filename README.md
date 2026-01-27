@@ -253,35 +253,461 @@ data, err := hvjson.MarshalWithConfig(&user, config)
 
 ### Marshal Functions
 
-| Function | Description |
-|----------|-------------|
-| `Marshal(v)` | Encode to JSON (auto-uses FastMarshal for structs) |
-| `MarshalTo(dst, v, config)` | Zero-copy encode to provided buffer |
-| `MarshalPooled(v)` | Encode using pooled buffer |
-| `FastMarshal(v)` | Use pre-compiled encoders |
-| `MarshalIndent(v, prefix, indent)` | Encode with indentation |
-| `FastMarshalIndent(v, prefix, indent)` | Fast path with indentation |
-| `MarshalWithConfig(v, config)` | Encode with custom config |
+#### `Marshal(v interface{}) ([]byte, error)`
+Encodes a Go value to JSON. Automatically uses FastMarshal for struct types for optimal performance.
+
+**Parameters:**
+- `v` - Any Go value to encode
+
+**Returns:**
+- `[]byte` - JSON-encoded data
+- `error` - Error if encoding fails
+
+**Example:**
+```go
+user := User{Name: "Alice", Age: 30}
+data, err := hvjson.Marshal(&user)  // Use pointer for zero allocations
+```
+
+---
+
+#### `MarshalString(v interface{}) (string, error)`
+Convenience function that encodes to JSON and returns a string instead of []byte.
+
+**Parameters:**
+- `v` - Any Go value to encode
+
+**Returns:**
+- `string` - JSON-encoded string
+- `error` - Error if encoding fails
+
+**Example:**
+```go
+jsonStr, err := hvjson.MarshalString(&user)
+fmt.Println(jsonStr)  // {"name":"Alice","age":30}
+```
+
+---
+
+#### `MarshalWithConfig(v interface{}, config *Config) ([]byte, error)`
+Encodes a Go value to JSON using custom configuration.
+
+**Parameters:**
+- `v` - Any Go value to encode
+- `config` - Configuration options (or nil for defaults)
+
+**Returns:**
+- `[]byte` - JSON-encoded data
+- `error` - Error if encoding fails
+
+**Example:**
+```go
+config := &hvjson.Config{
+    EscapeHTML: false,
+    MaxDepth:   10000,
+}
+data, err := hvjson.MarshalWithConfig(&user, config)
+```
+
+---
+
+#### `MarshalTo(dst []byte, v interface{}, config *Config) ([]byte, error)`
+Zero-copy encoding that appends JSON to the provided buffer. Best for performance-critical code.
+
+**Parameters:**
+- `dst` - Destination buffer to append to (can be empty)
+- `v` - Any Go value to encode
+- `config` - Configuration options (or nil for defaults)
+
+**Returns:**
+- `[]byte` - Extended buffer with JSON data
+- `error` - Error if encoding fails
+
+**Example:**
+```go
+// Reusable buffer for zero allocations
+buf := make([]byte, 0, 1024)
+for _, item := range items {
+    buf = buf[:0]  // Reset without reallocation
+    buf, err = hvjson.MarshalTo(buf, &item, nil)
+    // Use buf...
+}
+```
+
+---
+
+#### `MarshalPooled(v interface{}) (*MarshalResult, error)`
+Encodes using an internal buffer pool. More convenient than MarshalTo but slightly slower.
+
+**Parameters:**
+- `v` - Any Go value to encode
+
+**Returns:**
+- `*MarshalResult` - Result with Data field containing JSON
+- `error` - Error if encoding fails
+
+**Example:**
+```go
+result, err := hvjson.MarshalPooled(&user)
+json := result.Data  // or result.String()
+```
+
+---
+
+#### `MarshalIndent(v interface{}, prefix, indent string) ([]byte, error)`
+Encodes with human-readable indentation. Uses pre-computed indent tables for performance.
+
+**Parameters:**
+- `v` - Any Go value to encode
+- `prefix` - String to prefix each line with (usually "")
+- `indent` - Indentation string per level (e.g., "  " or "\t")
+
+**Returns:**
+- `[]byte` - Indented JSON-encoded data
+- `error` - Error if encoding fails
+
+**Example:**
+```go
+data, err := hvjson.MarshalIndent(&user, "", "  ")
+// {
+//   "name": "Alice",
+//   "age": 30
+// }
+```
+
+---
+
+#### `FastMarshal(v interface{}) ([]byte, error)`
+Uses pre-compiled type encoders for maximum performance. Best for struct types.
+
+**Parameters:**
+- `v` - Any Go value to encode (optimized for structs)
+
+**Returns:**
+- `[]byte` - JSON-encoded data
+- `error` - Error if encoding fails
+
+**Example:**
+```go
+data, err := hvjson.FastMarshal(&user)
+```
+
+---
+
+#### `FastMarshalIndent(v interface{}, prefix, indent string) ([]byte, error)`
+Fast path encoding with indentation. Combines pre-compiled encoders with indent formatting.
+
+**Parameters:**
+- `v` - Any Go value to encode
+- `prefix` - String to prefix each line with
+- `indent` - Indentation string per level
+
+**Returns:**
+- `[]byte` - Indented JSON-encoded data
+- `error` - Error if encoding fails
+
+**Example:**
+```go
+data, err := hvjson.FastMarshalIndent(&user, "", "    ")
+```
+
+---
 
 ### Unmarshal Functions
 
-| Function | Description |
-|----------|-------------|
-| `Unmarshal(data, v)` | Decode JSON to value |
-| `UnmarshalWithConfig(data, v, config)` | Decode with custom config |
+#### `Unmarshal(data []byte, v interface{}) error`
+Decodes JSON data into a Go value.
 
-### Streaming
+**Parameters:**
+- `data` - JSON-encoded data
+- `v` - Pointer to value to decode into
 
-| Type/Method | Description |
-|-------------|-------------|
-| `NewEncoder(w)` | Create streaming encoder |
-| `Encoder.Encode(v)` | Encode value to stream |
-| `Encoder.SetIndent(prefix, indent)` | Set indentation |
-| `Encoder.SetEscapeHTML(on)` | Control HTML escaping |
-| `NewDecoder(r)` | Create streaming decoder |
-| `Decoder.Decode(v)` | Decode value from stream |
-| `Decoder.DisallowUnknownFields()` | Error on unknown fields |
-| `Decoder.UseNumber()` | Use Number type |
+**Returns:**
+- `error` - Error if decoding fails
+
+**Example:**
+```go
+var user User
+err := hvjson.Unmarshal(data, &user)
+```
+
+---
+
+#### `UnmarshalString(data string, v interface{}) error`
+Convenience function that decodes from a JSON string.
+
+**Parameters:**
+- `data` - JSON-encoded string
+- `v` - Pointer to value to decode into
+
+**Returns:**
+- `error` - Error if decoding fails
+
+**Example:**
+```go
+var user User
+err := hvjson.UnmarshalString(`{"name":"Alice"}`, &user)
+```
+
+---
+
+#### `UnmarshalWithConfig(data []byte, v interface{}, config *Config) error`
+Decodes JSON with custom configuration options.
+
+**Parameters:**
+- `data` - JSON-encoded data
+- `v` - Pointer to value to decode into
+- `config` - Configuration options
+
+**Returns:**
+- `error` - Error if decoding fails
+
+**Example:**
+```go
+config := &hvjson.Config{
+    DisallowUnknownFields: true,
+    UseNumber: true,
+}
+var result map[string]interface{}
+err := hvjson.UnmarshalWithConfig(data, &result, config)
+```
+
+---
+
+### Configuration Functions
+
+#### `ConfigDefault() *Config`
+Returns the default configuration with validation enabled and HTML escaping on.
+
+**Returns:**
+- `*Config` - Default configuration
+
+**Example:**
+```go
+config := hvjson.ConfigDefault()
+config.MaxDepth = 5000  // Customize as needed
+```
+
+---
+
+#### `ConfigFastest() *Config`
+Returns configuration optimized for maximum speed (skips validation).
+
+**Returns:**
+- `*Config` - Performance-optimized configuration
+
+**Example:**
+```go
+config := hvjson.ConfigFastest()
+data, err := hvjson.MarshalWithConfig(&user, config)
+```
+
+---
+
+### Streaming API
+
+#### `NewEncoder(w io.Writer) *StreamEncoder`
+Creates a streaming encoder that writes JSON to an io.Writer.
+
+**Parameters:**
+- `w` - Writer to output JSON to
+
+**Returns:**
+- `*StreamEncoder` - Streaming encoder instance
+
+**Example:**
+```go
+var buf bytes.Buffer
+enc := hvjson.NewEncoder(&buf)
+enc.Encode(user1)
+enc.Encode(user2)
+```
+
+---
+
+#### `(*StreamEncoder) Encode(v interface{}) error`
+Encodes a value and writes it to the underlying writer.
+
+**Parameters:**
+- `v` - Value to encode
+
+**Returns:**
+- `error` - Error if encoding fails
+
+**Example:**
+```go
+enc := hvjson.NewEncoder(os.Stdout)
+for _, user := range users {
+    if err := enc.Encode(user); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+---
+
+#### `(*StreamEncoder) SetIndent(prefix, indent string)`
+Configures indentation for formatted output.
+
+**Parameters:**
+- `prefix` - String to prefix each line with
+- `indent` - Indentation string per level
+
+**Example:**
+```go
+enc := hvjson.NewEncoder(&buf)
+enc.SetIndent("", "  ")
+enc.Encode(user)  // Outputs indented JSON
+```
+
+---
+
+#### `(*StreamEncoder) SetEscapeHTML(on bool)`
+Controls whether <, >, and & are escaped as Unicode sequences.
+
+**Parameters:**
+- `on` - true to escape HTML characters, false otherwise
+
+**Example:**
+```go
+enc := hvjson.NewEncoder(&buf)
+enc.SetEscapeHTML(false)  // Don't escape <, >, &
+enc.Encode(data)
+```
+
+---
+
+#### `NewDecoder(r io.Reader) *StreamDecoder`
+Creates a streaming decoder that reads JSON from an io.Reader.
+
+**Parameters:**
+- `r` - Reader to read JSON from
+
+**Returns:**
+- `*StreamDecoder` - Streaming decoder instance
+
+**Example:**
+```go
+dec := hvjson.NewDecoder(resp.Body)
+var result Response
+if err := dec.Decode(&result); err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+#### `(*StreamDecoder) Decode(v interface{}) error`
+Decodes the next JSON value from the stream.
+
+**Parameters:**
+- `v` - Pointer to value to decode into
+
+**Returns:**
+- `error` - Error if decoding fails (io.EOF when stream ends)
+
+**Example:**
+```go
+dec := hvjson.NewDecoder(file)
+for {
+    var user User
+    if err := dec.Decode(&user); err == io.EOF {
+        break
+    } else if err != nil {
+        log.Fatal(err)
+    }
+    processUser(user)
+}
+```
+
+---
+
+#### `(*StreamDecoder) DisallowUnknownFields()`
+Configures decoder to return errors for unknown struct fields.
+
+**Example:**
+```go
+dec := hvjson.NewDecoder(reader)
+dec.DisallowUnknownFields()  // Strict mode
+var user User
+err := dec.Decode(&user)  // Errors if JSON has extra fields
+```
+
+---
+
+#### `(*StreamDecoder) UseNumber()`
+Configures decoder to decode numbers as Number type instead of float64.
+
+**Example:**
+```go
+dec := hvjson.NewDecoder(reader)
+dec.UseNumber()
+var m map[string]interface{}
+dec.Decode(&m)
+num := m["value"].(hvjson.Number)
+i, _ := num.Int64()  // Precise integer conversion
+```
+
+---
+
+### Types
+
+#### `type Config struct`
+Configuration options for encoding and decoding.
+
+**Fields:**
+```go
+type Config struct {
+    NoValidateJSONSkip    bool   // Skip UTF-8 validation
+    UseStreamingUTF8      bool   // Use streaming validation for large docs
+    MaxDepth              int    // Maximum nesting depth (default: 10000)
+    DisableCache          bool   // Disable struct field caching
+    UseNumber             bool   // Return Number type for interface{}
+    UseInt64              bool   // Return int64 for integers
+    DoIndent              bool   // Enable indentation
+    IndentPrefix          string // Line prefix for indented output
+    IndentString          string // Indent string per level
+    DisallowUnknownFields bool   // Error on unknown struct fields
+    EscapeHTML            bool   // Escape <, >, & (default: true)
+}
+```
+
+---
+
+#### `type Number string`
+Preserves exact JSON number representation for precision.
+
+**Methods:**
+- `String() string` - Returns the literal number text
+- `Int64() (int64, error)` - Converts to int64
+- `Float64() (float64, error)` - Converts to float64
+
+**Example:**
+```go
+config := &hvjson.Config{UseNumber: true}
+var m map[string]interface{}
+hvjson.UnmarshalWithConfig(data, &m, config)
+num := m["bigNumber"].(hvjson.Number)
+fmt.Println(num.String())  // Exact representation
+```
+
+---
+
+#### `type MarshalResult struct`
+Result from MarshalPooled containing JSON data.
+
+**Fields:**
+- `Data []byte` - JSON-encoded data
+
+**Methods:**
+- `String() string` - Returns JSON as string
+
+**Example:**
+```go
+result, err := hvjson.MarshalPooled(&user)
+fmt.Println(result.String())
+// Access raw bytes: result.Data
+```
 
 ## Performance Details
 
