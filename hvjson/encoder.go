@@ -11,11 +11,14 @@ import (
 	simd "github.com/dan-strohschein/syndrdb-simd"
 )
 
-// Pre-computed small integers for fast encoding (0-999)
-var smallIntTable [1000][]byte
+// Pre-computed small integers for fast encoding (0-9999)
+var smallIntTable [10000][]byte
 
 // Pre-computed indent tables for common patterns (0-16 levels)
 const maxPrecomputedIndentLevel = 16
+
+// Size of inline pointer seen array for cycle detection (avoids map allocation for simple structs)
+const ptrSeenInlineSize = 8
 
 var (
 	indent2Space [maxPrecomputedIndentLevel + 1][]byte // 2-space indent
@@ -24,7 +27,7 @@ var (
 )
 
 func init() {
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 10000; i++ {
 		smallIntTable[i] = []byte(strconv.Itoa(i))
 	}
 
@@ -54,12 +57,15 @@ func init() {
 }
 
 type Encoder struct {
-	buf         []byte
-	scratch     [256]byte // Pre-allocated scratch space to avoid small allocations
-	config      *Config
-	depth       int
-	indentLevel int // Current indentation level for MarshalIndent
-	ptrSeen     map[uintptr]bool
+	buf            []byte
+	scratch        [256]byte // Pre-allocated scratch space to avoid small allocations
+	config         *Config
+	depth          int
+	indentLevel    int // Current indentation level for MarshalIndent
+	// Inline pointer tracking for cycle detection (avoids map allocation for simple structs)
+	ptrSeenInline  [ptrSeenInlineSize]uintptr
+	ptrSeenCount   int
+	ptrSeen        map[uintptr]bool // Fallback for complex/deeply nested structures
 }
 
 var encoderPool = sync.Pool{
@@ -78,6 +84,27 @@ func newEncoder(config *Config) *Encoder {
 	e.config = config
 	e.depth = 0
 	e.indentLevel = 0
+	e.ptrSeenCount = 0 // Reset inline pointer tracking
+	if e.ptrSeen != nil {
+		for k := range e.ptrSeen {
+			delete(e.ptrSeen, k)
+		}
+	}
+	return e
+}
+
+// newEncoderWithBuffer creates an encoder that uses the provided buffer
+// instead of the internal scratch space. Used by MarshalTo for zero-copy encoding.
+func newEncoderWithBuffer(buf []byte, config *Config) *Encoder {
+	if config == nil {
+		config = ConfigDefault()
+	}
+	e := encoderPool.Get().(*Encoder)
+	e.buf = buf // Use provided buffer directly
+	e.config = config
+	e.depth = 0
+	e.indentLevel = 0
+	e.ptrSeenCount = 0
 	if e.ptrSeen != nil {
 		for k := range e.ptrSeen {
 			delete(e.ptrSeen, k)
@@ -218,14 +245,28 @@ func (e *Encoder) encodeValue(v reflect.Value) error {
 		}
 		if v.Kind() == reflect.Ptr {
 			ptr := v.Pointer()
-			if e.ptrSeen == nil {
-				e.ptrSeen = make(map[uintptr]bool, 8)
+			// Check for cycles - first try inline array, then fallback to map
+			if e.ptrSeenCount < ptrSeenInlineSize {
+				// Check inline array for cycle
+				for i := 0; i < e.ptrSeenCount; i++ {
+					if e.ptrSeenInline[i] == ptr {
+						return &SyntaxError{Code: ErrorInvalidValue, Message: "encountered a cycle via pointer"}
+					}
+				}
+				e.ptrSeenInline[e.ptrSeenCount] = ptr
+				e.ptrSeenCount++
+				defer func() { e.ptrSeenCount-- }()
+			} else {
+				// Fallback to map for deeply nested structures
+				if e.ptrSeen == nil {
+					e.ptrSeen = make(map[uintptr]bool, 8)
+				}
+				if e.ptrSeen[ptr] {
+					return &SyntaxError{Code: ErrorInvalidValue, Message: "encountered a cycle via pointer"}
+				}
+				e.ptrSeen[ptr] = true
+				defer delete(e.ptrSeen, ptr)
 			}
-			if e.ptrSeen[ptr] {
-				return &SyntaxError{Code: ErrorInvalidValue, Message: "encountered a cycle via pointer"}
-			}
-			e.ptrSeen[ptr] = true
-			defer delete(e.ptrSeen, ptr)
 		}
 		return e.encodeValue(v.Elem())
 	}
@@ -264,16 +305,29 @@ func (e *Encoder) encodeValueUnsafe(ptr unsafe.Pointer, typ reflect.Type) error 
 			e.buf = append(e.buf, "null"...)
 			return nil
 		}
-		// Check for cycles
+		// Check for cycles - first try inline array, then fallback to map
 		ptrAddr := uintptr(ptrVal)
-		if e.ptrSeen == nil {
-			e.ptrSeen = make(map[uintptr]bool, 8)
+		if e.ptrSeenCount < ptrSeenInlineSize {
+			// Check inline array for cycle
+			for i := 0; i < e.ptrSeenCount; i++ {
+				if e.ptrSeenInline[i] == ptrAddr {
+					return &SyntaxError{Code: ErrorInvalidValue, Message: "encountered a cycle via pointer"}
+				}
+			}
+			e.ptrSeenInline[e.ptrSeenCount] = ptrAddr
+			e.ptrSeenCount++
+			defer func() { e.ptrSeenCount-- }()
+		} else {
+			// Fallback to map for deeply nested structures
+			if e.ptrSeen == nil {
+				e.ptrSeen = make(map[uintptr]bool, 8)
+			}
+			if e.ptrSeen[ptrAddr] {
+				return &SyntaxError{Code: ErrorInvalidValue, Message: "encountered a cycle via pointer"}
+			}
+			e.ptrSeen[ptrAddr] = true
+			defer delete(e.ptrSeen, ptrAddr)
 		}
-		if e.ptrSeen[ptrAddr] {
-			return &SyntaxError{Code: ErrorInvalidValue, Message: "encountered a cycle via pointer"}
-		}
-		e.ptrSeen[ptrAddr] = true
-		defer delete(e.ptrSeen, ptrAddr)
 		return e.encodeValueUnsafe(ptrVal, typ.Elem())
 	}
 
@@ -372,8 +426,8 @@ func formatInt64Fast(i int64, buf []byte) int {
 
 //go:inline
 func (e *Encoder) encodeInt(i int64) error {
-	// Fast path for small positive integers (lookup table 0-999)
-	if i >= 0 && i < 1000 {
+	// Fast path for small positive integers (lookup table 0-9999)
+	if i >= 0 && i < 10000 {
 		e.buf = append(e.buf, smallIntTable[i]...)
 		return nil
 	}
@@ -412,8 +466,8 @@ func formatUint64Fast(u uint64, buf []byte) int {
 
 //go:inline
 func (e *Encoder) encodeUint(u uint64) error {
-	// Fast path for small integers (lookup table 0-999)
-	if u < 1000 {
+	// Fast path for small integers (lookup table 0-9999)
+	if u < 10000 {
 		e.buf = append(e.buf, smallIntTable[u]...)
 		return nil
 	}
@@ -450,9 +504,10 @@ func (e *Encoder) encodeString(s string) error {
 	needsHTMLEscape := e.config.EscapeHTML
 
 	// Fast path - no escaping needed
-	// For short strings (<16 bytes), inline check is faster than SIMD call
+	// For short strings (<8 bytes), inline check is faster than SIMD call
+	// ARM64 NEON processes 16 bytes atomically, so even 8-byte strings benefit from SIMD
 	needsEscape := false
-	if len(s) < 16 {
+	if len(s) < 8 {
 		for i := 0; i < len(bytes); i++ {
 			c := bytes[i]
 			if c == '"' || c == '\\' || c == '/' || c < 0x20 {
@@ -833,12 +888,26 @@ func (e *Encoder) encodeStringFast(s string) ([]byte, error) {
 }
 
 func (e *Encoder) encodeIntFast(i int64) ([]byte, error) {
-	e.buf = append(e.buf, strconv.FormatInt(i, 10)...)
+	// Fast path for small positive integers (lookup table 0-9999)
+	if i >= 0 && i < 10000 {
+		e.buf = append(e.buf, smallIntTable[i]...)
+		return e.buf, nil
+	}
+	// Use SIMD-optimized integer formatting
+	n := simd.FormatInt64(i, e.scratch[:20])
+	e.buf = append(e.buf, e.scratch[:n]...)
 	return e.buf, nil
 }
 
 func (e *Encoder) encodeUintFast(u uint64) ([]byte, error) {
-	e.buf = append(e.buf, strconv.FormatUint(u, 10)...)
+	// Fast path for small integers (lookup table 0-9999)
+	if u < 10000 {
+		e.buf = append(e.buf, smallIntTable[u]...)
+		return e.buf, nil
+	}
+	// Use SIMD-optimized integer formatting
+	n := simd.FormatUint64(u, e.scratch[:20])
+	e.buf = append(e.buf, e.scratch[:n]...)
 	return e.buf, nil
 }
 
@@ -846,11 +915,9 @@ func (e *Encoder) encodeFloatFast(f float64, is32bit bool) ([]byte, error) {
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return nil, &SyntaxError{Code: ErrorInvalidValue, Message: "invalid float value (NaN or Inf)"}
 	}
-	bitSize := 64
-	if is32bit {
-		bitSize = 32
-	}
-	e.buf = append(e.buf, strconv.FormatFloat(f, 'g', -1, bitSize)...)
+	// Use SIMD-optimized float formatting (requires 24-byte buffer)
+	n := simd.FormatFloat64(f, e.scratch[:24])
+	e.buf = append(e.buf, e.scratch[:n]...)
 	return e.buf, nil
 }
 

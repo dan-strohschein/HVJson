@@ -387,3 +387,44 @@ func FastMarshalWithConfig(v interface{}, config *Config) ([]byte, error) {
 
 	return encoder.buf, nil
 }
+
+// fastMarshalToWithEncoder uses pre-compiled encoders with an existing encoder.
+// Used by MarshalTo for zero-copy encoding.
+func fastMarshalToWithEncoder(encoder *Encoder, v interface{}) ([]byte, error) {
+	if v == nil {
+		encoder.buf = append(encoder.buf, "null"...)
+		return encoder.buf, nil
+	}
+
+	val := reflect.ValueOf(v)
+	t := val.Type()
+
+	// Get pre-compiled encoder
+	encoderFn := getEncoderFunc(t)
+
+	// Use unsafe pointer for direct access
+	var ptr unsafe.Pointer
+	if val.Kind() == reflect.Ptr {
+		if val.IsNil() {
+			encoder.buf = append(encoder.buf, "null"...)
+			return encoder.buf, nil
+		}
+		ptr = unsafe.Pointer(val.Pointer())
+		// Update type and encoder for pointed-to value
+		t = t.Elem()
+		encoderFn = getEncoderFunc(t)
+	} else if val.CanAddr() {
+		ptr = unsafe.Pointer(val.UnsafeAddr())
+	} else {
+		// Value is not addressable, allocate and copy
+		ptrVal := reflect.New(t)
+		ptrVal.Elem().Set(val)
+		ptr = unsafe.Pointer(ptrVal.Pointer())
+	}
+
+	if err := encoderFn(encoder, ptr); err != nil {
+		return nil, err
+	}
+
+	return encoder.buf, nil
+}

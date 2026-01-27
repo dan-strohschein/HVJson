@@ -137,8 +137,44 @@ func BenchmarkMarshalStruct(b *testing.B) {
 	}
 }
 
+// BenchmarkMarshalStructPtr uses pointer for optimal HVJson performance
+func BenchmarkMarshalStructPtr(b *testing.B) {
+	input := &TestStruct{
+		Name:   "John",
+		Age:    30,
+		Active: true,
+		Tags:   []string{"go", "json"},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := Marshal(input)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkMarshalStruct_StdLib(b *testing.B) {
 	input := TestStruct{
+		Name:   "John",
+		Age:    30,
+		Active: true,
+		Tags:   []string{"go", "json"},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := json.Marshal(input)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkMarshalStructPtr_StdLib uses pointer for fair comparison
+func BenchmarkMarshalStructPtr_StdLib(b *testing.B) {
+	input := &TestStruct{
 		Name:   "John",
 		Age:    30,
 		Active: true,
@@ -305,5 +341,70 @@ func BenchmarkFastMarshalStruct(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// BenchmarkMarshalTo tests zero-copy encoding to a pre-allocated buffer
+// Uses pointer to struct for optimal performance (avoids reflect.New allocation)
+func BenchmarkMarshalTo(b *testing.B) {
+	input := &TestStruct{
+		Name:   "John",
+		Age:    30,
+		Active: true,
+		Tags:   []string{"go", "json"},
+	}
+
+	// Pre-allocate buffer - this is where the true benefit comes
+	buf := make([]byte, 0, 256)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf = buf[:0] // Reset buffer without reallocation
+		var err error
+		buf, err = MarshalTo(buf, input, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkMarshalToValue benchmarks MarshalTo with a value (causes 1 alloc for addressability)
+func BenchmarkMarshalToValue(b *testing.B) {
+	input := TestStruct{
+		Name:   "John",
+		Age:    30,
+		Active: true,
+		Tags:   []string{"go", "json"},
+	}
+
+	buf := make([]byte, 0, 256)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf = buf[:0]
+		var err error
+		buf, err = MarshalTo(buf, input, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkMarshalPooled tests convenience pooled encoding
+func BenchmarkMarshalPooled(b *testing.B) {
+	input := TestStruct{
+		Name:   "John",
+		Age:    30,
+		Active: true,
+		Tags:   []string{"go", "json"},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		result, err := MarshalPooled(input)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = result.Data // Use the data
 	}
 }
