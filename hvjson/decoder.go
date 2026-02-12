@@ -27,6 +27,14 @@ func newDecoder(data []byte, config *Config) *Decoder {
 	}
 }
 
+// Reset reinitializes the decoder for a new data slice (used by stream decoder pool).
+// Pass nil to clear references before returning to pool.
+func (d *Decoder) Reset(data []byte) {
+	d.data = data
+	d.pos = 0
+	d.depth = 0
+}
+
 func (d *Decoder) Decode(v interface{}) error {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {

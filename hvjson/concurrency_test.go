@@ -160,7 +160,7 @@ func TestEncoderFuncCacheStarvation(t *testing.T) {
 
 	for _, typ := range types {
 		wg.Add(numGoroutines)
-		
+
 		// All goroutines encode the same type simultaneously
 		for i := 0; i < numGoroutines; i++ {
 			go func(value interface{}) {
@@ -191,11 +191,11 @@ func TestEncoderFuncCacheStarvation(t *testing.T) {
 // BenchmarkHighConcurrency benchmarks the system under high concurrent load
 func BenchmarkHighConcurrency(b *testing.B) {
 	type BenchStruct struct {
-		Name    string  `json:"name"`
-		Value   int     `json:"value"`
-		Score   float64 `json:"score"`
-		Active  bool    `json:"active"`
-		Tags    []string `json:"tags"`
+		Name   string   `json:"name"`
+		Value  int      `json:"value"`
+		Score  float64  `json:"score"`
+		Active bool     `json:"active"`
+		Tags   []string `json:"tags"`
 	}
 
 	data := BenchStruct{

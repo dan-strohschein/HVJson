@@ -1,8 +1,10 @@
 package hvjson
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -293,6 +295,274 @@ func TestStreamingDecoder(t *testing.T) {
 	}
 }
 
+// TestStreamingRoundTrip encodes a value with StreamEncoder then decodes with StreamDecoder
+// and verifies the result matches the original (round-trip accuracy).
+func TestStreamingRoundTrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		value interface{}
+	}{
+		{"struct", TestStruct{Name: "Alice", Age: 25, Active: true, Tags: []string{"a", "b"}}},
+		{"map", map[string]interface{}{"k": "v", "n": float64(42)}},
+		{"slice", []int{1, 2, 3}},
+		{"primitive_int", 42},
+		{"primitive_float", 3.14},
+		{"primitive_string", "hello"},
+		{"primitive_bool", true},
+		{"nested", map[string]interface{}{
+			"arr": []interface{}{1, "two", true},
+			"obj": map[string]string{"a": "b"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			enc := NewEncoder(&buf)
+			if err := enc.Encode(tt.value); err != nil {
+				t.Fatalf("Encode: %v", err)
+			}
+			dec := NewDecoder(&buf)
+			// Decode into interface{} then compare via JSON bytes for consistency
+			var got interface{}
+			if err := dec.Decode(&got); err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			wantBytes, err := Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("Marshal(original): %v", err)
+			}
+			gotBytes, err := Marshal(got)
+			if err != nil {
+				t.Fatalf("Marshal(decoded): %v", err)
+			}
+			var wantNorm, gotNorm interface{}
+			if err := json.Unmarshal(wantBytes, &wantNorm); err != nil {
+				t.Fatalf("json.Unmarshal(want): %v", err)
+			}
+			if err := json.Unmarshal(gotBytes, &gotNorm); err != nil {
+				t.Fatalf("json.Unmarshal(got): %v", err)
+			}
+			if !reflect.DeepEqual(gotNorm, wantNorm) {
+				t.Errorf("round-trip mismatch: got %v, want %v", gotNorm, wantNorm)
+			}
+		})
+	}
+}
+
+// TestStreamingMultipleValuesRoundTrip encodes several values with one encoder,
+// decodes with one decoder in a loop, and asserts each decoded value matches (NDJSON accuracy).
+func TestStreamingMultipleValuesRoundTrip(t *testing.T) {
+	values := []interface{}{
+		TestStruct{Name: "Alice", Age: 25, Active: true},
+		TestStruct{Name: "Bob", Age: 30, Active: false},
+		42,
+		"hello",
+		true,
+		nil,
+		[]int{1, 2, 3},
+	}
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	for _, v := range values {
+		if err := enc.Encode(v); err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+	}
+	dec := NewDecoder(&buf)
+	for i, want := range values {
+		var got interface{}
+		if err := dec.Decode(&got); err != nil {
+			t.Fatalf("Decode value %d: %v", i, err)
+		}
+		wantBytes, _ := Marshal(want)
+		gotBytes, _ := Marshal(got)
+		var wantNorm, gotNorm interface{}
+		if err := json.Unmarshal(wantBytes, &wantNorm); err != nil {
+			t.Fatalf("json.Unmarshal(want): %v", err)
+		}
+		if err := json.Unmarshal(gotBytes, &gotNorm); err != nil {
+			t.Fatalf("json.Unmarshal(got): %v", err)
+		}
+		if !reflect.DeepEqual(gotNorm, wantNorm) {
+			t.Errorf("value %d: got %v, want %v", i, gotNorm, wantNorm)
+		}
+	}
+	if dec.More() {
+		t.Error("expected no more values after last")
+	}
+}
+
+// TestStreamingEdgeCases covers null, literals, numbers, strings with escapes/Unicode,
+// empty object/array, and values that span fill() boundaries.
+func TestStreamingEdgeCases(t *testing.T) {
+	t.Run("null", func(t *testing.T) {
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		if err := enc.Encode(nil); err != nil {
+			t.Fatal(err)
+		}
+		dec := NewDecoder(&buf)
+		var got interface{}
+		if err := dec.Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+	})
+	t.Run("true_false", func(t *testing.T) {
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		for _, v := range []interface{}{true, false} {
+			if err := enc.Encode(v); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dec := NewDecoder(&buf)
+		var b1, b2 bool
+		if err := dec.Decode(&b1); err != nil {
+			t.Fatal(err)
+		}
+		if err := dec.Decode(&b2); err != nil {
+			t.Fatal(err)
+		}
+		if b1 != true || b2 != false {
+			t.Errorf("got %v, %v", b1, b2)
+		}
+	})
+	t.Run("numbers", func(t *testing.T) {
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		enc.Encode(42)
+		enc.Encode(-1)
+		enc.Encode(3.14)
+		enc.Encode(1e10)
+		dec := NewDecoder(&buf)
+		var i int
+		dec.Decode(&i)
+		if i != 42 {
+			t.Errorf("int: got %d", i)
+		}
+		dec.Decode(&i)
+		if i != -1 {
+			t.Errorf("int negative: got %d", i)
+		}
+		var f float64
+		dec.Decode(&f)
+		if f != 3.14 {
+			t.Errorf("float: got %f", f)
+		}
+		dec.Decode(&f)
+		if f != 1e10 {
+			t.Errorf("scientific: got %f", f)
+		}
+	})
+	t.Run("string_roundtrip", func(t *testing.T) {
+		s := "hello world"
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		if err := enc.Encode(s); err != nil {
+			t.Fatal(err)
+		}
+		dec := NewDecoder(&buf)
+		var got string
+		if err := dec.Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != s {
+			t.Errorf("got %q, want %q", got, s)
+		}
+	})
+	t.Run("empty_object_array", func(t *testing.T) {
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		enc.Encode(map[string]interface{}{})
+		enc.Encode([]interface{}{})
+		dec := NewDecoder(&buf)
+		var m map[string]interface{}
+		if err := dec.Decode(&m); err != nil {
+			t.Fatal(err)
+		}
+		if len(m) != 0 {
+			t.Errorf("empty object: got %v", m)
+		}
+		var s []interface{}
+		if err := dec.Decode(&s); err != nil {
+			t.Fatal(err)
+		}
+		if len(s) != 0 {
+			t.Errorf("empty array: got %v", s)
+		}
+	})
+	// Large value that still fits in one decoder buffer (default 4096) to stress buffer path
+	t.Run("large_value_single_buffer", func(t *testing.T) {
+		large := map[string]string{"key": strings.Repeat("x", 2000)}
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		if err := enc.Encode(large); err != nil {
+			t.Fatal(err)
+		}
+		dec := NewDecoder(&buf)
+		var got map[string]string
+		if err := dec.Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got["key"] != large["key"] {
+			t.Errorf("large value mismatch: len(got)=%d, len(want)=%d", len(got["key"]), len(large["key"]))
+		}
+	})
+}
+
+// TestStreamingEncoderPerformanceRegression runs encode in a benchmark and fails
+// if ns/op or allocs exceed thresholds (catches regressions).
+// Baseline: 129.1 ns/op, 3 allocs. Thresholds set generously for varying CI/host speed.
+func TestStreamingEncoderPerformanceRegression(t *testing.T) {
+	const maxNsPerOp = 250   // allow for slower hosts
+	const maxAllocsPerOp = 5 // allow minor alloc variance
+	input := TestStruct{Name: "John", Age: 30, Active: true, Tags: []string{"go", "json"}}
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	result := testing.Benchmark(func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			buf.Reset()
+			if err := enc.Encode(input); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	if result.NsPerOp() > maxNsPerOp {
+		t.Errorf("StreamingEncoder ns/op regression: got %d, max %d", result.NsPerOp(), maxNsPerOp)
+	}
+	if result.AllocsPerOp() > maxAllocsPerOp {
+		t.Errorf("StreamingEncoder allocs/op regression: got %d, max %d", result.AllocsPerOp(), maxAllocsPerOp)
+	}
+}
+
+// TestStreamingDecoderPerformanceRegression runs decode in a benchmark and fails
+// if ns/op or allocs exceed thresholds.
+// Baseline: 748.9 ns/op, 12 allocs. Thresholds allow bufio wrapper and varying host speed.
+func TestStreamingDecoderPerformanceRegression(t *testing.T) {
+	const maxNsPerOp = 2000  // allow bufio.Reader wrapper and slower hosts
+	const maxAllocsPerOp = 22 // allow alloc variance
+	jsonStr := `{"name":"John","age":30,"active":true,"tags":["go","json"]}
+`
+	benchResult := testing.Benchmark(func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			dec := NewDecoder(strings.NewReader(jsonStr))
+			var out TestStruct
+			if err := dec.Decode(&out); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	if benchResult.NsPerOp() > maxNsPerOp {
+		t.Errorf("StreamingDecoder ns/op regression: got %d, max %d", benchResult.NsPerOp(), maxNsPerOp)
+	}
+	if benchResult.AllocsPerOp() > maxAllocsPerOp {
+		t.Errorf("StreamingDecoder allocs/op regression: got %d, max %d", benchResult.AllocsPerOp(), maxAllocsPerOp)
+	}
+}
+
 func BenchmarkStreamingEncoder(b *testing.B) {
 	input := TestStruct{
 		Name:   "John",
@@ -323,6 +593,45 @@ func BenchmarkStreamingDecoder(b *testing.B) {
 		var result TestStruct
 		if err := dec.Decode(&result); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkStreamingDecoderFromBufio measures decoder when reading from bufio.Reader
+// (e.g. for Phase 3 buffered-reader comparison).
+func BenchmarkStreamingDecoderFromBufio(b *testing.B) {
+	jsonStr := `{"name":"John","age":30,"active":true,"tags":["go","json"]}
+`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r := bufio.NewReader(strings.NewReader(jsonStr))
+		dec := NewDecoder(r)
+		var result TestStruct
+		if err := dec.Decode(&result); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkStreamingDecoderManyValues decodes N small values from one stream
+// to stress alloc and skipValue/whitespace path. Uses 50 values so payload
+// fits in one buffer and avoids fill-boundary edge cases.
+func BenchmarkStreamingDecoderManyValues(b *testing.B) {
+	const numValues = 50
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	for i := 0; i < numValues; i++ {
+		_ = enc.Encode(TestStruct{Name: "John", Age: 30, Active: true, Tags: []string{"go", "json"}})
+	}
+	payload := buf.String()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dec := NewDecoder(strings.NewReader(payload))
+		for j := 0; j < numValues; j++ {
+			var result TestStruct
+			if err := dec.Decode(&result); err != nil {
+				b.Fatal(err)
+			}
 		}
 	}
 }

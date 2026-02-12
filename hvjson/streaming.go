@@ -1,7 +1,12 @@
 package hvjson
 
 import (
+	"bufio"
+	"bytes"
 	"io"
+	"sync"
+
+	simd "github.com/dan-strohschein/syndrdb-simd"
 )
 
 // StreamEncoder writes JSON values to an output stream.
@@ -27,7 +32,7 @@ func NewEncoder(w io.Writer) *StreamEncoder {
 }
 
 // Encode writes the JSON encoding of v to the stream,
-// followed by a newline character.
+// followed by a newline character (single write for fewer syscalls and no newline alloc).
 func (se *StreamEncoder) Encode(v interface{}) error {
 	if se.err != nil {
 		return se.err
@@ -43,35 +48,35 @@ func (se *StreamEncoder) Encode(v interface{}) error {
 		return err
 	}
 
-	// Write to stream
-	if _, err := se.w.Write(data); err != nil {
+	// Single write: build JSON + newline in se.buf to avoid second Write and []byte{'\n'} alloc
+	se.buf = append(se.buf[:0], data...)
+	se.buf = append(se.buf, '\n')
+	if _, err := se.w.Write(se.buf); err != nil {
 		se.err = err
 		return err
 	}
-
-	// Write newline
-	if _, err := se.w.Write([]byte{'\n'}); err != nil {
-		se.err = err
-		return err
-	}
-
 	return nil
 }
 
 // StreamDecoder reads and decodes JSON values from an input stream.
 type StreamDecoder struct {
-	r         io.Reader
-	config    *Config
-	buf       []byte
-	pos       int
-	filled    int
-	err       error
-	useNumber bool
-	useInt64  bool
+	r               io.Reader
+	config          *Config
+	buf             []byte
+	pos             int
+	filled          int
+	err             error
+	useNumber       bool
+	useInt64        bool
+	valueStartOffset int // start of current value in buf; reset to 0 when fill() compacts
 }
 
 // NewDecoder returns a new decoder that reads from r.
+// If r is not already a *bufio.Reader, it is wrapped to reduce read syscalls.
 func (c *Config) NewDecoder(r io.Reader) *StreamDecoder {
+	if _, ok := r.(*bufio.Reader); !ok {
+		r = bufio.NewReader(r)
+	}
 	return &StreamDecoder{
 		r:      r,
 		config: c,
@@ -86,6 +91,11 @@ func NewDecoder(r io.Reader) *StreamDecoder {
 	return ConfigDefault().NewDecoder(r)
 }
 
+// streamDecoderPool reuses Decoder instances for stream decoding to reduce allocations.
+var streamDecoderPool = sync.Pool{
+	New: func() interface{} { return &Decoder{} },
+}
+
 // Decode reads the next JSON-encoded value from its input and stores it
 // in the value pointed to by v.
 func (sd *StreamDecoder) Decode(v interface{}) error {
@@ -98,8 +108,8 @@ func (sd *StreamDecoder) Decode(v interface{}) error {
 		return err
 	}
 
-	// Mark the start position
-	start := sd.pos
+	// Mark the start of this value (fill() may compact and set valueStartOffset to 0)
+	sd.valueStartOffset = sd.pos
 
 	// Find the end of this JSON value
 	end, err := sd.skipValue()
@@ -107,12 +117,22 @@ func (sd *StreamDecoder) Decode(v interface{}) error {
 		return err
 	}
 
-	// Extract the JSON value
+	// Extract the JSON value. If fill() compacted during skipValue, valueStartOffset was set to 0
+	// and the value is at the start of the buffer; otherwise use the offset we recorded.
+	start := sd.valueStartOffset
+	if start > end {
+		start = 0 // compact happened mid-skip; value is at buf[0:end]
+	}
 	jsonData := sd.buf[start:end]
 
-	// Unmarshal it
-	decoder := newDecoder(jsonData, sd.config)
-	if err := decoder.Decode(v); err != nil {
+	// Unmarshal using pooled Decoder to avoid allocation per value
+	decoder := streamDecoderPool.Get().(*Decoder)
+	decoder.Reset(jsonData)
+	decoder.config = sd.config
+	err = decoder.Decode(v)
+	decoder.Reset(nil) // clear slice reference before returning to pool
+	streamDecoderPool.Put(decoder)
+	if err != nil {
 		sd.err = err
 		return err
 	}
@@ -141,16 +161,27 @@ func (sd *StreamDecoder) UseInt64() {
 	}
 }
 
-// skipWhitespace skips whitespace characters in the stream
+// simdWhitespaceMinLen is the minimum remaining buffer length to use SIMD skip.
+const simdWhitespaceMinLen = 32
+
+// skipWhitespace skips whitespace characters in the stream.
+// Uses SIMD when enough data is available for better throughput on whitespace-heavy input.
 func (sd *StreamDecoder) skipWhitespace() error {
 	for {
-		// Need more data?
 		if sd.pos >= sd.filled {
 			if err := sd.fill(); err != nil {
 				return err
 			}
 		}
-
+		remaining := sd.filled - sd.pos
+		if remaining >= simdWhitespaceMinLen {
+			newPos := simd.SkipWhitespace(sd.buf[:sd.filled], sd.pos)
+			sd.pos = newPos
+			if sd.pos < sd.filled {
+				return nil
+			}
+			continue
+		}
 		c := sd.buf[sd.pos]
 		if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
 			sd.pos++
@@ -323,18 +354,38 @@ func (sd *StreamDecoder) skipArray() (int, error) {
 	}
 }
 
-// skipLiteral skips a JSON literal (true, false, null)
+// Predefined literal bytes to avoid string allocation in skipLiteral.
+var (
+	literalTrue  = []byte("true")
+	literalFalse = []byte("false")
+	literalNull  = []byte("null")
+)
+
+// skipLiteral skips a JSON literal (true, false, null) using byte comparison to avoid allocations.
 func (sd *StreamDecoder) skipLiteral(literals ...string) (int, error) {
 	for _, lit := range literals {
-		if sd.pos+len(lit) > sd.filled {
+		litLen := len(lit)
+		if sd.pos+litLen > sd.filled {
 			if err := sd.fill(); err != nil {
 				return 0, err
 			}
 		}
 
-		if sd.pos+len(lit) <= sd.filled {
-			if string(sd.buf[sd.pos:sd.pos+len(lit)]) == lit {
-				sd.pos += len(lit)
+		if sd.pos+litLen <= sd.filled {
+			slice := sd.buf[sd.pos : sd.pos+litLen]
+			var match bool
+			switch lit {
+			case "true":
+				match = bytes.Equal(slice, literalTrue)
+			case "false":
+				match = bytes.Equal(slice, literalFalse)
+			case "null":
+				match = bytes.Equal(slice, literalNull)
+			default:
+				match = string(slice) == lit // fallback for any other literal
+			}
+			if match {
+				sd.pos += litLen
 				return sd.pos, nil
 			}
 		}
@@ -422,26 +473,61 @@ func (sd *StreamDecoder) skipNumber() (int, error) {
 	return sd.pos, nil
 }
 
-// fill reads more data from the reader into the buffer
+// streamDecoderBufPoolMinCap is the minimum buffer capacity to use the buffer pool in fill().
+const streamDecoderBufPoolMinCap = 64 * 1024
+
+// fill reads more data from the reader into the buffer.
+// When we have unprocessed data (mid-value), we grow and copy from valueStartOffset
+// so the full value stays contiguous; otherwise we compact or reset.
+// Large buffers (>= 64KB) are obtained from the buffer pool to reduce GC pressure.
 func (sd *StreamDecoder) fill() error {
 	if sd.err != nil {
 		return sd.err
 	}
 
-	// If we have unprocessed data, move it to the beginning
 	if sd.pos < sd.filled {
-		copy(sd.buf, sd.buf[sd.pos:sd.filled])
-		sd.filled -= sd.pos
-		sd.pos = 0
+		// We're in the middle of a value; keep the full value contiguous.
+		valueLen := sd.filled - sd.valueStartOffset
+		newCap := valueLen * 2
+		if newCap < len(sd.buf)*2 {
+			newCap = len(sd.buf) * 2
+		}
+		var newBuf []byte
+		if newCap >= streamDecoderBufPoolMinCap {
+			newBuf = getBuffer(newCap)
+			newBuf = newBuf[:valueLen]
+			if cap(sd.buf) >= streamDecoderBufPoolMinCap {
+				putBuffer(sd.buf)
+			}
+		} else {
+			newBuf = make([]byte, newCap)
+		}
+		copy(newBuf, sd.buf[sd.valueStartOffset:sd.filled])
+		sd.buf = newBuf
+		sd.pos = sd.pos - sd.valueStartOffset
+		sd.filled = valueLen
+		sd.valueStartOffset = 0
 	} else {
 		sd.pos = 0
 		sd.filled = 0
+		sd.valueStartOffset = 0
 	}
 
-	// Grow buffer if needed
+	// Grow buffer if we still don't have room to read
 	if sd.filled >= len(sd.buf)-1 {
-		newBuf := make([]byte, len(sd.buf)*2)
-		copy(newBuf, sd.buf[:sd.filled])
+		newCap := len(sd.buf) * 2
+		var newBuf []byte
+		if newCap >= streamDecoderBufPoolMinCap {
+			newBuf = getBuffer(newCap)
+			newBuf = newBuf[:sd.filled]
+			copy(newBuf, sd.buf[:sd.filled])
+			if cap(sd.buf) >= streamDecoderBufPoolMinCap {
+				putBuffer(sd.buf)
+			}
+		} else {
+			newBuf = make([]byte, newCap)
+			copy(newBuf, sd.buf[:sd.filled])
+		}
 		sd.buf = newBuf
 	}
 
@@ -453,7 +539,6 @@ func (sd *StreamDecoder) fill() error {
 
 	if err != nil {
 		if err == io.EOF && sd.filled > sd.pos {
-			// We have data to process, don't return EOF yet
 			return nil
 		}
 		sd.err = err

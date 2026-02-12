@@ -10,9 +10,9 @@ import (
 type encoderFunc func(e *Encoder, ptr unsafe.Pointer) error
 
 var (
-	encoderFuncCache      sync.Map // map[reflect.Type]encoderFunc
-	encoderCompileOnceMu  sync.Mutex
-	encoderCompileOnce    = make(map[reflect.Type]*sync.Once)
+	encoderFuncCache     sync.Map // map[reflect.Type]encoderFunc
+	encoderCompileOnceMu sync.Mutex
+	encoderCompileOnce   = make(map[reflect.Type]*sync.Once)
 )
 
 // getEncoderFunc returns a pre-compiled encoder for the given type

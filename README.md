@@ -758,9 +758,13 @@ BenchmarkFastMarshalIndent-12          143.4 ns/op    160 B/op    3 allocs/op
 BenchmarkUnmarshalStruct-12            529.4 ns/op    376 B/op   16 allocs/op
 BenchmarkUnmarshalStruct_StdLib-12     736.5 ns/op    360 B/op   11 allocs/op
 
-BenchmarkStreamingEncoder-12           174.3 ns/op    129 B/op    3 allocs/op
-BenchmarkStreamingDecoder-12           924.2 ns/op   4504 B/op   18 allocs/op
+BenchmarkStreamingEncoder-12           195.0 ns/op    128 B/op    2 allocs/op
+BenchmarkStreamingDecoder-12           1876 ns/op    8799 B/op   21 allocs/op
+BenchmarkStreamingDecoderFromBufio-12  1778 ns/op    8799 B/op   21 allocs/op
+BenchmarkStreamingDecoderManyValues-12 38301 ns/op   27236 B/op  805 allocs/op
 ```
+
+*Streaming benchmarks: encoder uses single write + newline (2 allocs); decoder uses pooled decoder, bufio.Reader, SIMD whitespace, and optional buffer pool. `BenchmarkStreamingDecoderFromBufio` measures decoder with an explicit bufio.Reader; `BenchmarkStreamingDecoderManyValues` decodes 50 NDJSON values per op.*
 
 ### Performance Summary
 
@@ -771,6 +775,9 @@ BenchmarkStreamingDecoder-12           924.2 ns/op   4504 B/op   18 allocs/op
 | MarshalTo (zero-copy) | 88.4 ns/op, 0 allocs | N/A | **Zero allocations** |
 | MarshalIndent | 145.9 ns/op | N/A | Pre-computed tables |
 | Unmarshal | 529.4 ns/op | 736.5 ns/op | **28.1% faster** |
+| Streaming encoder | 195.0 ns/op, 2 allocs | N/A | Single write, pooled |
+| Streaming decoder | 1876 ns/op | N/A | Buffered, SIMD whitespace |
+| Streaming decoder (many values) | 38301 ns/op (50 values) | N/A | NDJSON throughput |
 
 ## Benchmarks
 
