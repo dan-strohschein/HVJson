@@ -2,6 +2,7 @@ package hvjson
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 )
 
@@ -136,6 +137,88 @@ func TestStreamEncoderSetIndent(t *testing.T) {
 	}
 
 	t.Logf("StreamEncoder.SetIndent output:\n%s", result)
+}
+
+// TestIncrementalStreamEncoderOutputMatchesBatch verifies that IncrementalStreamEncoder
+// produces equivalent JSON to StreamEncoder: decode both and compare (so map key order is irrelevant).
+func TestIncrementalStreamEncoderOutputMatchesBatch(t *testing.T) {
+	type Person struct {
+		Name string   `json:"name"`
+		Age  int      `json:"age"`
+		Tags []string `json:"tags"`
+	}
+	tests := []struct {
+		name  string
+		value interface{}
+	}{
+		{"primitive_int", 42},
+		{"primitive_string", "hello"},
+		{"primitive_bool", true},
+		{"struct", Person{Name: "Alice", Age: 25, Tags: []string{"a", "b"}}},
+		{"slice", []int{1, 2, 3}},
+		{"map", map[string]int{"a": 1, "b": 2}},
+		{"nested", map[string]interface{}{
+			"arr": []interface{}{1, "two", true},
+			"obj": map[string]string{"x": "y"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var incBuf, streamBuf bytes.Buffer
+			incEnc := NewIncrementalEncoder(&incBuf, 1024) // small threshold to trigger flushes
+			streamEnc := NewEncoder(&streamBuf)
+			if err := incEnc.Encode(tt.value); err != nil {
+				t.Fatalf("IncrementalStreamEncoder.Encode: %v", err)
+			}
+			if err := streamEnc.Encode(tt.value); err != nil {
+				t.Fatalf("StreamEncoder.Encode: %v", err)
+			}
+			incOut := incBuf.Bytes()
+			streamOut := streamBuf.Bytes()
+			// Strip trailing newline for decode
+			if len(incOut) > 0 && incOut[len(incOut)-1] == '\n' {
+				incOut = incOut[:len(incOut)-1]
+			}
+			if len(streamOut) > 0 && streamOut[len(streamOut)-1] == '\n' {
+				streamOut = streamOut[:len(streamOut)-1]
+			}
+			var incDec, streamDec interface{}
+			if err := json.Unmarshal(incOut, &incDec); err != nil {
+				t.Fatalf("json.Unmarshal(incremental): %v", err)
+			}
+			if err := json.Unmarshal(streamOut, &streamDec); err != nil {
+				t.Fatalf("json.Unmarshal(stream): %v", err)
+			}
+			// Compare with reflect.DeepEqual so map order doesn't matter
+			wantNorm, _ := json.Marshal(streamDec)
+			gotNorm, _ := json.Marshal(incDec)
+			if !bytes.Equal(gotNorm, wantNorm) {
+				t.Errorf("decoded value mismatch: incremental %s vs stream %s", gotNorm, wantNorm)
+			}
+		})
+	}
+}
+
+// TestIncrementalStreamEncoderLargeValue verifies incremental encoder with a value larger than flush threshold.
+func TestIncrementalStreamEncoderLargeValue(t *testing.T) {
+	// Build a string that will exceed a 256-byte flush threshold
+	s := string(bytes.Repeat([]byte("x"), 300))
+	var buf bytes.Buffer
+	enc := NewIncrementalEncoder(&buf, 256)
+	if err := enc.Encode(s); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	want, err := Marshal(s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got := buf.Bytes()
+	if len(got) > 0 && got[len(got)-1] == '\n' {
+		got = got[:len(got)-1]
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("large value mismatch: got %d bytes, want %d bytes", len(got), len(want))
+	}
 }
 
 func BenchmarkMarshalIndent(b *testing.B) {

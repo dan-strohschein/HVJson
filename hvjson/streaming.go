@@ -58,6 +58,112 @@ func (se *StreamEncoder) Encode(v interface{}) error {
 	return nil
 }
 
+// DefaultIncrementalFlushThreshold is the default buffer size (64 KiB) before flushing when using IncrementalStreamEncoder.
+// Tuned for speed; use a smaller value for lower memory.
+const DefaultIncrementalFlushThreshold = 64 * 1024
+
+// IncrementalStreamEncoder writes JSON values to an output stream with incremental flushing.
+// It flushes to the underlying io.Writer when the buffer reaches flushThreshold bytes, keeping memory bounded
+// while preserving SIMD-accelerated encoding. Use this for large streams (e.g. many or large documents)
+// instead of StreamEncoder, which buffers each value fully before writing.
+//
+// The underlying Writer should not return partial writes (wrap with bufio.Writer if needed).
+// Same SIMD and encoding behavior as Marshal; only the write path is incremental.
+type IncrementalStreamEncoder struct {
+	w              io.Writer
+	config         *Config
+	err            error
+	buf            []byte
+	flushThreshold int
+	enc            *Encoder // dedicated encoder, not from pool
+}
+
+// NewIncrementalEncoder returns a new incremental streaming encoder that writes to w.
+// flushThreshold is the buffer size in bytes before flushing; if <= 0, DefaultIncrementalFlushThreshold is used.
+func (c *Config) NewIncrementalEncoder(w io.Writer, flushThreshold int) *IncrementalStreamEncoder {
+	if flushThreshold <= 0 {
+		flushThreshold = DefaultIncrementalFlushThreshold
+	}
+	buf := make([]byte, 0, flushThreshold)
+	return &IncrementalStreamEncoder{
+		w:              w,
+		config:         c,
+		buf:            buf,
+		flushThreshold: flushThreshold,
+		enc:            &Encoder{},
+	}
+}
+
+// NewIncrementalEncoder returns a new incremental streaming encoder with default config.
+func NewIncrementalEncoder(w io.Writer, flushThreshold int) *IncrementalStreamEncoder {
+	return ConfigDefault().NewIncrementalEncoder(w, flushThreshold)
+}
+
+// Encode encodes v as JSON and writes it to the stream with incremental flushes, then writes a newline.
+func (ise *IncrementalStreamEncoder) Encode(v interface{}) error {
+	if ise.err != nil {
+		return ise.err
+	}
+	enc := ise.enc
+	ise.buf = ise.buf[:0]
+	enc.buf = ise.buf
+	enc.config = ise.config
+	enc.streamOut = ise.w
+	enc.streamThreshold = ise.flushThreshold
+	enc.depth = 0
+	enc.indentLevel = 0
+	enc.ptrSeenCount = 0
+	enc.streamErr = nil
+	if enc.ptrSeen != nil {
+		for k := range enc.ptrSeen {
+			delete(enc.ptrSeen, k)
+		}
+	}
+
+	_, err := enc.Encode(v)
+	if err != nil {
+		ise.err = err
+		enc.streamOut = nil
+		enc.streamThreshold = 0
+		return err
+	}
+	if enc.streamErr != nil {
+		ise.err = enc.streamErr
+		enc.streamOut = nil
+		enc.streamThreshold = 0
+		return enc.streamErr
+	}
+	enc.flushRemaining()
+	ise.buf = enc.buf // reuse encoder's buffer (may have grown) for next Encode
+	enc.streamOut = nil
+	enc.streamThreshold = 0
+
+	ise.buf = append(ise.buf[:0], '\n')
+	if _, err := ise.w.Write(ise.buf); err != nil {
+		ise.err = err
+		return err
+	}
+	return nil
+}
+
+// SetIndent sets the indentation prefix and string for formatted output (like StreamEncoder.SetIndent).
+func (ise *IncrementalStreamEncoder) SetIndent(prefix, indent string) {
+	if ise.config == nil {
+		ise.config = ConfigDefault()
+	}
+	ise.config.IndentPrefix = prefix
+	ise.config.IndentString = indent
+	ise.config.DoIndent = true
+}
+
+// SetEscapeHTML sets whether to escape <, >, and & (like StreamEncoder.SetEscapeHTML).
+func (ise *IncrementalStreamEncoder) SetEscapeHTML(on bool) {
+	if ise.config == nil {
+		ise.config = ConfigDefault()
+	}
+	ise.config.EscapeHTML = on
+}
+
 // StreamDecoder reads and decodes JSON values from an input stream.
 type StreamDecoder struct {
 	r               io.Reader

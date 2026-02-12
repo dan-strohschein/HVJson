@@ -49,6 +49,7 @@ data, err := hvjson.Marshal(myStruct)
   
 - **Streaming Support**: Full io.Reader/io.Writer compatibility
   - `NewEncoder(io.Writer)` for streaming output
+  - `NewIncrementalEncoder(io.Writer, flushThreshold)` for incremental streaming (bounded memory, SIMD)
   - `NewDecoder(io.Reader)` for streaming input
   - `SetIndent(prefix, indent)` for formatted streaming output
   - `DisallowUnknownFields()` for strict decoding
@@ -577,6 +578,35 @@ enc.Encode(data)
 
 ---
 
+### Incremental streaming (bounded memory)
+
+`StreamEncoder` encodes each value fully into memory before writing. For very large values or many documents, use the incremental streaming encoder so the buffer is flushed to the writer when it reaches a size threshold (default 64 KiB). Same SIMD encoding; only the write path is incremental.
+
+#### `NewIncrementalEncoder(w io.Writer, flushThreshold int) *IncrementalStreamEncoder`
+Creates an encoder that flushes to `w` whenever the internal buffer reaches `flushThreshold` bytes. If `flushThreshold <= 0`, `DefaultIncrementalFlushThreshold` (64 KiB) is used. Tuned for speed; use a smaller value for lower memory.
+
+**Parameters:**
+- `w` - Writer to output JSON to
+- `flushThreshold` - Buffer size in bytes before flushing; 0 for default (64 KiB)
+
+**Returns:**
+- `*IncrementalStreamEncoder` - Incremental streaming encoder instance
+
+**Example:**
+```go
+var buf bytes.Buffer
+enc := hvjson.NewIncrementalEncoder(&buf, 4096)  // flush every 4 KiB
+for _, doc := range largeDocs {
+    if err := enc.Encode(doc); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+The underlying `Writer` should not return partial writes (wrap with `bufio.Writer` if needed). `SetIndent` and `SetEscapeHTML` are supported the same as `StreamEncoder`.
+
+---
+
 #### `NewDecoder(r io.Reader) *StreamDecoder`
 Creates a streaming decoder that reads JSON from an io.Reader.
 
@@ -874,6 +904,7 @@ hvjson/
 - ✅ UseNumber for exact number preservation
 - ✅ UseInt64 for integer type control
 - ✅ StreamEncoder.SetIndent for formatted streaming
+- ✅ IncrementalStreamEncoder for incremental flush (bounded memory, same SIMD)
 - ✅ Full SIMD acceleration for string operations
 - ✅ DisallowUnknownFields for strict decoding
 - ✅ SetEscapeHTML for HTML character control

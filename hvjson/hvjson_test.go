@@ -583,6 +583,51 @@ func BenchmarkStreamingEncoder(b *testing.B) {
 	}
 }
 
+// BenchmarkIncrementalStreamEncoder encodes one value per op with incremental flushing (64 KiB threshold).
+func BenchmarkIncrementalStreamEncoder(b *testing.B) {
+	input := TestStruct{
+		Name:   "John",
+		Age:    30,
+		Active: true,
+		Tags:   []string{"go", "json"},
+	}
+
+	var buf bytes.Buffer
+	enc := NewIncrementalEncoder(&buf, 0) // 0 => default 64 KiB
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		if err := enc.Encode(input); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkIncrementalStreamEncoderManyValues encodes 1000 small values to compare allocs vs StreamEncoder.
+func BenchmarkIncrementalStreamEncoderManyValues(b *testing.B) {
+	const numValues = 1000
+	input := TestStruct{
+		Name:   "John",
+		Age:    30,
+		Active: true,
+		Tags:   []string{"go", "json"},
+	}
+
+	var buf bytes.Buffer
+	enc := NewIncrementalEncoder(&buf, 4096)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		for j := 0; j < numValues; j++ {
+			if err := enc.Encode(input); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}
+
 func BenchmarkStreamingDecoder(b *testing.B) {
 	jsonStr := `{"name":"John","age":30,"active":true,"tags":["go","json"]}
 `

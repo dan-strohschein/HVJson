@@ -2,6 +2,7 @@ package hvjson
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"reflect"
 	"strconv"
@@ -66,6 +67,10 @@ type Encoder struct {
 	ptrSeenInline [ptrSeenInlineSize]uintptr
 	ptrSeenCount  int
 	ptrSeen       map[uintptr]bool // Fallback for complex/deeply nested structures
+	// Incremental streaming: when set, writeBytes/writeByte flush to streamOut when buf reaches streamThreshold
+	streamOut       io.Writer // nil for batch encoding (Marshal, StreamEncoder)
+	streamThreshold int      // 0 for batch encoding
+	streamErr       error    // first write error during streaming; caller checks after Encode
 }
 
 var encoderPool = sync.Pool{
@@ -85,6 +90,9 @@ func newEncoder(config *Config) *Encoder {
 	e.depth = 0
 	e.indentLevel = 0
 	e.ptrSeenCount = 0 // Reset inline pointer tracking
+	e.streamOut = nil
+	e.streamThreshold = 0
+	e.streamErr = nil
 	if e.ptrSeen != nil {
 		for k := range e.ptrSeen {
 			delete(e.ptrSeen, k)
@@ -105,6 +113,9 @@ func newEncoderWithBuffer(buf []byte, config *Config) *Encoder {
 	e.depth = 0
 	e.indentLevel = 0
 	e.ptrSeenCount = 0
+	e.streamOut = nil
+	e.streamThreshold = 0
+	e.streamErr = nil
 	if e.ptrSeen != nil {
 		for k := range e.ptrSeen {
 			delete(e.ptrSeen, k)
@@ -130,6 +141,71 @@ func (e *Encoder) isBufferUsingScratch() bool {
 	return bufPtr >= scratchStart && bufPtr < scratchEnd
 }
 
+// writeByte appends one byte to the buffer and flushes to streamOut if at or over streamThreshold.
+// When streamOut is nil (batch mode), this is a single append plus a predictable nil check.
+func (e *Encoder) writeByte(b byte) {
+	e.buf = append(e.buf, b)
+	if e.streamOut != nil && len(e.buf) >= e.streamThreshold {
+		e.flushToStream()
+	}
+}
+
+// writeBytes appends p to the buffer and flushes to streamOut if at or over streamThreshold.
+// When len(p) >= streamThreshold and streamOut is set, p is written directly to avoid copy and buffer growth.
+// When streamOut is nil (batch mode), this is a single append plus a predictable nil check.
+func (e *Encoder) writeBytes(p []byte) {
+	if e.streamOut != nil && len(p) >= e.streamThreshold {
+		// Flush existing buffer first, then write p directly (no copy)
+		if len(e.buf) > 0 {
+			e.flushToStream()
+		}
+		if _, err := e.streamOut.Write(p); err != nil {
+			e.streamErr = err
+			e.streamOut = &errWriter{err: err}
+		}
+		return
+	}
+	e.buf = append(e.buf, p...)
+	if e.streamOut != nil && len(e.buf) >= e.streamThreshold {
+		e.flushToStream()
+	}
+}
+
+// errWriter wraps an error so streamOut can carry write errors; flushToStream checks for it.
+type errWriter struct{ err error }
+
+func (w *errWriter) Write(p []byte) (n int, err error) { return 0, w.err }
+
+// flushToStream writes e.buf to streamOut and resets e.buf to reuse capacity.
+// Partial writes are not retried (for speed); use a Writer that does not return partial writes (e.g. bufio.Writer).
+func (e *Encoder) flushToStream() {
+	if e.streamOut == nil || len(e.buf) == 0 {
+		return
+	}
+	// Detect wrapped errWriter from a previous failed write
+	if ew, ok := e.streamOut.(*errWriter); ok {
+		_ = ew
+		return
+	}
+	n, err := e.streamOut.Write(e.buf)
+	if err != nil {
+		e.streamErr = err
+		e.streamOut = &errWriter{err: err}
+		return
+	}
+	if n < len(e.buf) {
+		// Partial write: advance and keep remainder (caller should use bufio.Writer to avoid)
+		e.buf = e.buf[n:]
+		return
+	}
+	e.buf = e.buf[:0]
+}
+
+// flushRemaining writes any buffered data to streamOut and resets the buffer. No-op when streamOut is nil.
+func (e *Encoder) flushRemaining() {
+	e.flushToStream()
+}
+
 // writeNewlineIndent writes a newline and the current indentation.
 // Uses pre-computed tables for common indent patterns for zero allocation.
 func (e *Encoder) writeNewlineIndent() {
@@ -137,11 +213,11 @@ func (e *Encoder) writeNewlineIndent() {
 		return
 	}
 
-	e.buf = append(e.buf, '\n')
+	e.writeByte('\n')
 
 	// Write prefix if set
 	if len(e.config.IndentPrefix) > 0 {
-		e.buf = append(e.buf, e.config.IndentPrefix...)
+		e.writeBytes(unsafe.Slice(unsafe.StringData(e.config.IndentPrefix), len(e.config.IndentPrefix)))
 	}
 
 	// Use pre-computed table if possible
@@ -151,24 +227,24 @@ func (e *Encoder) writeNewlineIndent() {
 	switch indentStr {
 	case "  ": // 2-space (most common)
 		if level <= maxPrecomputedIndentLevel {
-			e.buf = append(e.buf, indent2Space[level]...)
+			e.writeBytes(indent2Space[level])
 			return
 		}
 	case "    ": // 4-space
 		if level <= maxPrecomputedIndentLevel {
-			e.buf = append(e.buf, indent4Space[level]...)
+			e.writeBytes(indent4Space[level])
 			return
 		}
 	case "\t": // tab
 		if level <= maxPrecomputedIndentLevel {
-			e.buf = append(e.buf, indentTab[level]...)
+			e.writeBytes(indentTab[level])
 			return
 		}
 	}
 
 	// Fallback: compute indent on the fly
 	for i := 0; i < level; i++ {
-		e.buf = append(e.buf, indentStr...)
+		e.writeBytes(unsafe.Slice(unsafe.StringData(indentStr), len(indentStr)))
 	}
 }
 
@@ -176,9 +252,10 @@ func (e *Encoder) writeNewlineIndent() {
 // Adds a space after the colon when indenting for readability.
 func (e *Encoder) writeColonSeparator() {
 	if e.config.DoIndent {
-		e.buf = append(e.buf, ':', ' ')
+		e.writeByte(':')
+		e.writeByte(' ')
 	} else {
-		e.buf = append(e.buf, ':')
+		e.writeByte(':')
 	}
 }
 
@@ -214,7 +291,7 @@ func (e *Encoder) Encode(v interface{}) ([]byte, error) {
 	case bool:
 		return e.encodeBoolFast(val)
 	case nil:
-		e.buf = append(e.buf, "null"...)
+		e.writeBytes(nullBytes)
 		return e.buf, nil
 	}
 
@@ -245,13 +322,13 @@ func (e *Encoder) encodeValue(v reflect.Value) error {
 	}
 
 	if !v.IsValid() {
-		e.buf = append(e.buf, "null"...)
+		e.writeBytes(nullBytes)
 		return nil
 	}
 
 	if v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
 		if v.IsNil() {
-			e.buf = append(e.buf, "null"...)
+			e.writeBytes(nullBytes)
 			return nil
 		}
 		if v.Kind() == reflect.Ptr {
@@ -313,7 +390,7 @@ func (e *Encoder) encodeValueUnsafe(ptr unsafe.Pointer, typ reflect.Type) error 
 	if typ.Kind() == reflect.Ptr {
 		ptrVal := *(*unsafe.Pointer)(ptr)
 		if ptrVal == nil {
-			e.buf = append(e.buf, "null"...)
+			e.writeBytes(nullBytes)
 			return nil
 		}
 		// Check for cycles - first try inline array, then fallback to map
@@ -392,9 +469,9 @@ func (e *Encoder) encodeValueUnsafe(ptr unsafe.Pointer, typ reflect.Type) error 
 //go:inline
 func (e *Encoder) encodeBool(b bool) error {
 	if b {
-		e.buf = append(e.buf, "true"...)
+		e.writeBytes(trueBytes)
 	} else {
-		e.buf = append(e.buf, "false"...)
+		e.writeBytes(falseBytes)
 	}
 	return nil
 }
@@ -439,7 +516,7 @@ func formatInt64Fast(i int64, buf []byte) int {
 func (e *Encoder) encodeInt(i int64) error {
 	// Fast path for small positive integers (lookup table 0-9999)
 	if i >= 0 && i < 10000 {
-		e.buf = append(e.buf, smallIntTable[i]...)
+		e.writeBytes(smallIntTable[i])
 		return nil
 	}
 
@@ -447,7 +524,7 @@ func (e *Encoder) encodeInt(i int64) error {
 	// Create temporary buffer to avoid corrupting e.buf if it's using scratch space
 	var tempBuf [20]byte
 	n := simd.FormatInt64(i, tempBuf[:20])
-	e.buf = append(e.buf, tempBuf[:n]...)
+	e.writeBytes(tempBuf[:n])
 	return nil
 }
 
@@ -481,7 +558,7 @@ func formatUint64Fast(u uint64, buf []byte) int {
 func (e *Encoder) encodeUint(u uint64) error {
 	// Fast path for small integers (lookup table 0-9999)
 	if u < 10000 {
-		e.buf = append(e.buf, smallIntTable[u]...)
+		e.writeBytes(smallIntTable[u])
 		return nil
 	}
 
@@ -489,7 +566,7 @@ func (e *Encoder) encodeUint(u uint64) error {
 	// Create temporary buffer to avoid corrupting e.buf if it's using scratch space
 	var tempBuf [20]byte
 	n := simd.FormatUint64(u, tempBuf[:20])
-	e.buf = append(e.buf, tempBuf[:n]...)
+	e.writeBytes(tempBuf[:n])
 	return nil
 }
 
@@ -502,14 +579,14 @@ func (e *Encoder) encodeFloat(f float64, is32bit bool) error {
 	// Create temporary buffer to avoid corrupting e.buf if it's using scratch space
 	var tempBuf [24]byte
 	n := simd.FormatFloat64(f, tempBuf[:24])
-	e.buf = append(e.buf, tempBuf[:n]...)
+	e.writeBytes(tempBuf[:n])
 	return nil
 }
 
 func (e *Encoder) encodeString(s string) error {
-	e.buf = append(e.buf, '"')
+	e.writeByte('"')
 	if s == "" {
-		e.buf = append(e.buf, '"')
+		e.writeByte('"')
 		return nil
 	}
 
@@ -550,8 +627,8 @@ func (e *Encoder) encodeString(s string) error {
 	}
 
 	if !needsEscape {
-		e.buf = append(e.buf, s...)
-		e.buf = append(e.buf, '"')
+		e.writeBytes(unsafe.Slice(unsafe.StringData(s), len(s)))
+		e.writeByte('"')
 		return nil
 	}
 
@@ -566,18 +643,25 @@ func (e *Encoder) encodeString(s string) error {
 	escapedLen := simd.EscapedSize(bytes)
 	oldLen := len(e.buf)
 
-	// Ensure buffer has capacity
+	// Ensure buffer has capacity (flush first when streaming to avoid growth)
 	if cap(e.buf)-oldLen < escapedLen {
-		newBuf := make([]byte, oldLen, oldLen+escapedLen)
-		copy(newBuf, e.buf)
-		e.buf = newBuf
+		if e.streamOut != nil && oldLen > 0 {
+			e.flushToStream()
+			oldLen = 0
+		}
+		if cap(e.buf) < escapedLen {
+			newBuf := make([]byte, len(e.buf), len(e.buf)+escapedLen)
+			copy(newBuf, e.buf)
+			e.buf = newBuf
+			oldLen = len(e.buf)
+		}
 	}
 	e.buf = e.buf[:oldLen+escapedLen]
 
 	// SIMD escape
 	simd.EscapeJSONString(bytes, e.buf[oldLen:])
 
-	e.buf = append(e.buf, '"')
+	e.writeByte('"')
 	return nil
 }
 
@@ -586,42 +670,64 @@ func (e *Encoder) encodeStringWithHTMLEscape(bytes []byte) error {
 	for _, c := range bytes {
 		switch c {
 		case '"':
-			e.buf = append(e.buf, '\\', '"')
+			e.writeByte('\\')
+			e.writeByte('"')
 		case '\\':
-			e.buf = append(e.buf, '\\', '\\')
+			e.writeByte('\\')
+			e.writeByte('\\')
 		case '/':
-			e.buf = append(e.buf, '\\', '/')
+			e.writeByte('\\')
+			e.writeByte('/')
 		case '\b':
-			e.buf = append(e.buf, '\\', 'b')
+			e.writeByte('\\')
+			e.writeByte('b')
 		case '\f':
-			e.buf = append(e.buf, '\\', 'f')
+			e.writeByte('\\')
+			e.writeByte('f')
 		case '\n':
-			e.buf = append(e.buf, '\\', 'n')
+			e.writeByte('\\')
+			e.writeByte('n')
 		case '\r':
-			e.buf = append(e.buf, '\\', 'r')
+			e.writeByte('\\')
+			e.writeByte('r')
 		case '\t':
-			e.buf = append(e.buf, '\\', 't')
+			e.writeByte('\\')
+			e.writeByte('t')
 		case '<':
-			e.buf = append(e.buf, '\\', 'u', '0', '0', '3', 'c')
+			e.writeBytes(u003cBytes)
 		case '>':
-			e.buf = append(e.buf, '\\', 'u', '0', '0', '3', 'e')
+			e.writeBytes(u003eBytes)
 		case '&':
-			e.buf = append(e.buf, '\\', 'u', '0', '0', '2', '6')
+			e.writeBytes(u0026Bytes)
 		default:
 			if c < 0x20 {
-				// Other control characters: \uXXXX
-				e.buf = append(e.buf, '\\', 'u', '0', '0', hexDigits[c>>4], hexDigits[c&0xF])
+				e.writeByte('\\')
+				e.writeByte('u')
+				e.writeByte('0')
+				e.writeByte('0')
+				e.writeByte(hexDigits[c>>4])
+				e.writeByte(hexDigits[c&0xF])
 			} else {
-				e.buf = append(e.buf, c)
+				e.writeByte(c)
 			}
 		}
 	}
-	e.buf = append(e.buf, '"')
+	e.writeByte('"')
 	return nil
 }
 
 // hexDigits for encoding control characters
 var hexDigits = []byte("0123456789abcdef")
+
+// Literal byte slices for writeBytes to avoid per-call allocation
+var (
+	nullBytes   = []byte("null")
+	trueBytes   = []byte("true")
+	falseBytes  = []byte("false")
+	u003cBytes  = []byte(`\u003c`) // <
+	u003eBytes  = []byte(`\u003e`) // >
+	u0026Bytes  = []byte(`\u0026`) // &
+)
 
 func (e *Encoder) encodeStruct(v reflect.Value) error {
 	e.depth++
@@ -635,14 +741,19 @@ func (e *Encoder) encodeStruct(v reflect.Value) error {
 		return err
 	}
 
-	// Ensure buffer has estimated capacity
+	// Ensure buffer has estimated capacity (flush first when streaming to avoid growth)
 	if cap(e.buf)-len(e.buf) < fields.estimatedSize {
-		newBuf := make([]byte, len(e.buf), len(e.buf)+fields.estimatedSize)
-		copy(newBuf, e.buf)
-		e.buf = newBuf
+		if e.streamOut != nil && len(e.buf) > 0 {
+			e.flushToStream()
+		}
+		if cap(e.buf) < fields.estimatedSize {
+			newBuf := make([]byte, len(e.buf), len(e.buf)+fields.estimatedSize)
+			copy(newBuf, e.buf)
+			e.buf = newBuf
+		}
 	}
 
-	e.buf = append(e.buf, '{')
+	e.writeByte('{')
 	first := true
 
 	for _, field := range fields.list {
@@ -658,12 +769,12 @@ func (e *Encoder) encodeStruct(v reflect.Value) error {
 			e.writeNewlineIndent()
 			first = false
 		} else {
-			e.buf = append(e.buf, ',')
+			e.writeByte(',')
 			e.writeNewlineIndent()
 		}
 
 		// Use pre-encoded field name
-		e.buf = append(e.buf, field.encodedName...)
+		e.writeBytes(field.encodedName)
 		e.writeColonSeparator()
 
 		fv := v.Field(field.index)
@@ -677,20 +788,25 @@ func (e *Encoder) encodeStruct(v reflect.Value) error {
 		e.indentLevel--
 		e.writeNewlineIndent()
 	}
-	e.buf = append(e.buf, '}')
+	e.writeByte('}')
 	e.depth--
 	return nil
 }
 
 func (e *Encoder) encodeStructUnsafe(structPtr unsafe.Pointer, fields *fieldsCache) error {
-	// Ensure buffer has estimated capacity
+	// Ensure buffer has estimated capacity (flush first when streaming to avoid growth)
 	if cap(e.buf)-len(e.buf) < fields.estimatedSize {
-		newBuf := make([]byte, len(e.buf), len(e.buf)+fields.estimatedSize)
-		copy(newBuf, e.buf)
-		e.buf = newBuf
+		if e.streamOut != nil && len(e.buf) > 0 {
+			e.flushToStream()
+		}
+		if cap(e.buf) < fields.estimatedSize {
+			newBuf := make([]byte, len(e.buf), len(e.buf)+fields.estimatedSize)
+			copy(newBuf, e.buf)
+			e.buf = newBuf
+		}
 	}
 
-	e.buf = append(e.buf, '{')
+	e.writeByte('{')
 	first := true
 
 	for _, field := range fields.list {
@@ -707,12 +823,12 @@ func (e *Encoder) encodeStructUnsafe(structPtr unsafe.Pointer, fields *fieldsCac
 			e.writeNewlineIndent()
 			first = false
 		} else {
-			e.buf = append(e.buf, ',')
+			e.writeByte(',')
 			e.writeNewlineIndent()
 		}
 
 		// Use pre-encoded field name
-		e.buf = append(e.buf, field.encodedName...)
+		e.writeBytes(field.encodedName)
 		e.writeColonSeparator()
 
 		// Use compiled encoder for maximum performance
@@ -725,19 +841,19 @@ func (e *Encoder) encodeStructUnsafe(structPtr unsafe.Pointer, fields *fieldsCac
 		e.indentLevel--
 		e.writeNewlineIndent()
 	}
-	e.buf = append(e.buf, '}')
+	e.writeByte('}')
 	return nil
 }
 
 func (e *Encoder) encodeMap(v reflect.Value) error {
 	if v.IsNil() {
-		e.buf = append(e.buf, "null"...)
+		e.writeBytes(nullBytes)
 		return nil
 	}
 
 	e.depth++
 
-	e.buf = append(e.buf, '{')
+	e.writeByte('{')
 	keys := v.MapKeys()
 	first := true
 
@@ -747,7 +863,7 @@ func (e *Encoder) encodeMap(v reflect.Value) error {
 			e.writeNewlineIndent()
 			first = false
 		} else {
-			e.buf = append(e.buf, ',')
+			e.writeByte(',')
 			e.writeNewlineIndent()
 		}
 
@@ -780,20 +896,20 @@ func (e *Encoder) encodeMap(v reflect.Value) error {
 		e.indentLevel--
 		e.writeNewlineIndent()
 	}
-	e.buf = append(e.buf, '}')
+	e.writeByte('}')
 	e.depth--
 	return nil
 }
 
 func (e *Encoder) encodeSlice(v reflect.Value) error {
 	if v.Kind() == reflect.Slice && v.IsNil() {
-		e.buf = append(e.buf, "null"...)
+		e.writeBytes(nullBytes)
 		return nil
 	}
 
 	e.depth++
 
-	e.buf = append(e.buf, '[')
+	e.writeByte('[')
 	n := v.Len()
 
 	if n > 0 {
@@ -803,7 +919,7 @@ func (e *Encoder) encodeSlice(v reflect.Value) error {
 
 	for i := 0; i < n; i++ {
 		if i > 0 {
-			e.buf = append(e.buf, ',')
+			e.writeByte(',')
 			e.writeNewlineIndent()
 		}
 		if err := e.encodeValue(v.Index(i)); err != nil {
@@ -816,7 +932,7 @@ func (e *Encoder) encodeSlice(v reflect.Value) error {
 		e.indentLevel--
 		e.writeNewlineIndent()
 	}
-	e.buf = append(e.buf, ']')
+	e.writeByte(']')
 	e.depth--
 	return nil
 }
@@ -906,26 +1022,26 @@ func (e *Encoder) encodeStringFast(s string) ([]byte, error) {
 func (e *Encoder) encodeIntFast(i int64) ([]byte, error) {
 	// Fast path for small positive integers (lookup table 0-9999)
 	if i >= 0 && i < 10000 {
-		e.buf = append(e.buf, smallIntTable[i]...)
+		e.writeBytes(smallIntTable[i])
 		return e.buf, nil
 	}
 	// Use SIMD-optimized integer formatting
 	var tempBuf [20]byte
 	n := simd.FormatInt64(i, tempBuf[:20])
-	e.buf = append(e.buf, tempBuf[:n]...)
+	e.writeBytes(tempBuf[:n])
 	return e.buf, nil
 }
 
 func (e *Encoder) encodeUintFast(u uint64) ([]byte, error) {
 	// Fast path for small integers (lookup table 0-9999)
 	if u < 10000 {
-		e.buf = append(e.buf, smallIntTable[u]...)
+		e.writeBytes(smallIntTable[u])
 		return e.buf, nil
 	}
 	// Use SIMD-optimized integer formatting
 	var tempBuf [20]byte
 	n := simd.FormatUint64(u, tempBuf[:20])
-	e.buf = append(e.buf, tempBuf[:n]...)
+	e.writeBytes(tempBuf[:n])
 	return e.buf, nil
 }
 
@@ -936,15 +1052,15 @@ func (e *Encoder) encodeFloatFast(f float64, is32bit bool) ([]byte, error) {
 	// Use SIMD-optimized float formatting (requires 24-byte buffer)
 	var tempBuf [24]byte
 	n := simd.FormatFloat64(f, tempBuf[:24])
-	e.buf = append(e.buf, tempBuf[:n]...)
+	e.writeBytes(tempBuf[:n])
 	return e.buf, nil
 }
 
 func (e *Encoder) encodeBoolFast(b bool) ([]byte, error) {
 	if b {
-		e.buf = append(e.buf, "true"...)
+		e.writeBytes(trueBytes)
 	} else {
-		e.buf = append(e.buf, "false"...)
+		e.writeBytes(falseBytes)
 	}
 	return e.buf, nil
 }

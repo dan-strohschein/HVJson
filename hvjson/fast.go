@@ -59,7 +59,7 @@ func compileEncoderFunc(t reflect.Type) encoderFunc {
 		return func(e *Encoder, ptr unsafe.Pointer) error {
 			p := *(*unsafe.Pointer)(ptr)
 			if p == nil {
-				e.buf = append(e.buf, "null"...)
+				e.writeBytes(nullBytes)
 				return nil
 			}
 			return elemFunc(e, p)
@@ -132,7 +132,7 @@ func compileStructEncoder(t reflect.Type) encoderFunc {
 			return &SyntaxError{Code: ErrorStackOverflow, Message: "exceeded maximum nesting depth"}
 		}
 
-		e.buf = append(e.buf, '{')
+		e.writeByte('{')
 		first := true
 
 		for i := range fieldEncoders {
@@ -149,12 +149,12 @@ func compileStructEncoder(t reflect.Type) encoderFunc {
 				e.writeNewlineIndent()
 				first = false
 			} else {
-				e.buf = append(e.buf, ',')
+				e.writeByte(',')
 				e.writeNewlineIndent()
 			}
 
 			// Encode key using pre-encoded name (no function call!)
-			e.buf = append(e.buf, fe.encodedName...)
+			e.writeBytes(fe.encodedName)
 			e.writeColonSeparator()
 
 			// Encode value
@@ -168,7 +168,7 @@ func compileStructEncoder(t reflect.Type) encoderFunc {
 			e.indentLevel--
 			e.writeNewlineIndent()
 		}
-		e.buf = append(e.buf, '}')
+		e.writeByte('}')
 		e.depth--
 		return nil
 	}
@@ -264,7 +264,7 @@ func compileSliceEncoder(t reflect.Type) encoderFunc {
 		return func(e *Encoder, ptr unsafe.Pointer) error {
 			slice := (*sliceHeader)(ptr)
 			if slice.Data == nil {
-				e.buf = append(e.buf, "null"...)
+				e.writeBytes(nullBytes)
 				return nil
 			}
 
@@ -274,7 +274,7 @@ func compileSliceEncoder(t reflect.Type) encoderFunc {
 				return &SyntaxError{Code: ErrorStackOverflow, Message: "exceeded maximum nesting depth"}
 			}
 
-			e.buf = append(e.buf, '[')
+			e.writeByte('[')
 			if slice.Len > 0 {
 				e.indentLevel++
 				e.writeNewlineIndent()
@@ -282,7 +282,7 @@ func compileSliceEncoder(t reflect.Type) encoderFunc {
 
 			for i := 0; i < slice.Len; i++ {
 				if i > 0 {
-					e.buf = append(e.buf, ',')
+					e.writeByte(',')
 					e.writeNewlineIndent()
 				}
 				// Direct string access without function pointer call
@@ -297,7 +297,7 @@ func compileSliceEncoder(t reflect.Type) encoderFunc {
 				e.indentLevel--
 				e.writeNewlineIndent()
 			}
-			e.buf = append(e.buf, ']')
+			e.writeByte(']')
 			e.depth--
 			return nil
 		}
@@ -309,7 +309,7 @@ func compileSliceEncoder(t reflect.Type) encoderFunc {
 	return func(e *Encoder, ptr unsafe.Pointer) error {
 		slice := (*sliceHeader)(ptr)
 		if slice.Data == nil {
-			e.buf = append(e.buf, "null"...)
+			e.writeBytes(nullBytes)
 			return nil
 		}
 
@@ -319,7 +319,7 @@ func compileSliceEncoder(t reflect.Type) encoderFunc {
 			return &SyntaxError{Code: ErrorStackOverflow, Message: "exceeded maximum nesting depth"}
 		}
 
-		e.buf = append(e.buf, '[')
+		e.writeByte('[')
 		if slice.Len > 0 {
 			e.indentLevel++
 			e.writeNewlineIndent()
@@ -327,7 +327,7 @@ func compileSliceEncoder(t reflect.Type) encoderFunc {
 
 		for i := 0; i < slice.Len; i++ {
 			if i > 0 {
-				e.buf = append(e.buf, ',')
+				e.writeByte(',')
 				e.writeNewlineIndent()
 			}
 			elemPtr := unsafe.Pointer(uintptr(slice.Data) + uintptr(i)*elemSize)
@@ -341,7 +341,7 @@ func compileSliceEncoder(t reflect.Type) encoderFunc {
 			e.indentLevel--
 			e.writeNewlineIndent()
 		}
-		e.buf = append(e.buf, ']')
+		e.writeByte(']')
 		e.depth--
 		return nil
 	}
