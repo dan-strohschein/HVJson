@@ -605,6 +605,41 @@ for _, doc := range largeDocs {
 
 The underlying `Writer` should not return partial writes (wrap with `bufio.Writer` if needed). `SetIndent` and `SetEscapeHTML` are supported the same as `StreamEncoder`.
 
+#### Streaming write API (IncrementalStreamEncoder)
+
+You can build one JSON value incrementally with the same SIMD encoding and incremental flush by using the write methods instead of `Encode(v)`. Do not call `Encode` while a write session is active (before the matching `WriteObjectEnd` / `WriteArrayEnd`).
+
+**Structure:** `WriteObjectStart`, `WriteObjectEnd`, `WriteArrayStart`, `WriteArrayEnd`, `WriteObjectField(key string)`  
+**Values:** `WriteString(s)`, `WriteInt64(i)`, `WriteUint64(u)`, `WriteFloat64(f)`, `WriteFloat32(f)`, `WriteBool(b)`, `WriteNull()`, `WriteValue(v interface{})`  
+**Flush:** `Flush() error` — write any buffered bytes to the underlying writer.
+
+Use typed writers (`WriteString`, `WriteInt64`, etc.) on hot paths; `WriteValue(v)` uses reflection. Invalid sequences (e.g. `WriteObjectEnd` with empty stack) return `ErrInvalidWriteState`. After finishing a value, call `Flush()` if needed; writing a second value automatically emits a newline (NDJSON).
+
+**Example (object with fields):**
+```go
+var buf bytes.Buffer
+enc := hvjson.NewIncrementalEncoder(&buf, 4096)
+_ = enc.WriteObjectStart()
+_ = enc.WriteObjectField("name")
+_ = enc.WriteString("Alice")
+_ = enc.WriteObjectField("age")
+_ = enc.WriteInt64(30)
+_ = enc.WriteObjectEnd()
+_ = enc.Flush()
+// buf contains {"name":"Alice","age":30} (or indented if SetIndent was used)
+```
+
+**Example (array of primitives):**
+```go
+enc.WriteArrayStart()
+enc.WriteInt64(1)
+enc.WriteString("two")
+enc.WriteBool(true)
+enc.WriteNull()
+enc.WriteArrayEnd()
+enc.Flush()
+```
+
 ---
 
 #### `NewDecoder(r io.Reader) *StreamDecoder`

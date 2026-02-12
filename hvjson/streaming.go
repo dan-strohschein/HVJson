@@ -3,11 +3,26 @@ package hvjson
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"sync"
 
 	simd "github.com/dan-strohschein/syndrdb-simd"
 )
+
+// ErrInvalidWriteState is returned when a write method is called in an invalid
+// sequence (e.g. WriteObjectEnd with empty stack, or Encode during a write session).
+var ErrInvalidWriteState = errors.New("hvjson: invalid write state")
+
+// Write stack frame bits: bit 0 = kind (0 array, 1 object), bit 1 = first (0 not first, 1 first).
+const (
+	writeFrameArrayNotFirst = 0
+	writeFrameObjectNotFirst = 1
+	writeFrameArrayFirst    = 2
+	writeFrameObjectFirst   = 3
+)
+
+const maxWriteDepth = 64
 
 // StreamEncoder writes JSON values to an output stream.
 type StreamEncoder struct {
@@ -69,6 +84,11 @@ const DefaultIncrementalFlushThreshold = 64 * 1024
 //
 // The underlying Writer should not return partial writes (wrap with bufio.Writer if needed).
 // Same SIMD and encoding behavior as Marshal; only the write path is incremental.
+//
+// IncrementalStreamEncoder also supports a streaming write API: WriteObjectStart, WriteArrayStart,
+// WriteObjectField, WriteString, WriteInt64, etc., so callers can build one JSON value incrementally
+// with the same SIMD encoding and incremental flush. Do not call Encode while a write session is active
+// (write stack non-empty).
 type IncrementalStreamEncoder struct {
 	w              io.Writer
 	config         *Config
@@ -76,6 +96,12 @@ type IncrementalStreamEncoder struct {
 	buf            []byte
 	flushThreshold int
 	enc            *Encoder // dedicated encoder, not from pool
+
+	// Streaming write API state (zero allocation: fixed-size stack).
+	writeStack      [maxWriteDepth]uint8
+	writeDepth      int
+	writeIndentLevel int
+	valueComplete   bool // true after a full value has been written (for NDJSON newline before next value)
 }
 
 // NewIncrementalEncoder returns a new incremental streaming encoder that writes to w.
@@ -100,9 +126,14 @@ func NewIncrementalEncoder(w io.Writer, flushThreshold int) *IncrementalStreamEn
 }
 
 // Encode encodes v as JSON and writes it to the stream with incremental flushes, then writes a newline.
+// Encode must not be called while a write session is active (write stack non-empty); use WriteObjectEnd/WriteArrayEnd first.
 func (ise *IncrementalStreamEncoder) Encode(v interface{}) error {
 	if ise.err != nil {
 		return ise.err
+	}
+	if ise.writeDepth != 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
 	}
 	enc := ise.enc
 	ise.buf = ise.buf[:0]
@@ -162,6 +193,424 @@ func (ise *IncrementalStreamEncoder) SetEscapeHTML(on bool) {
 		ise.config = ConfigDefault()
 	}
 	ise.config.EscapeHTML = on
+}
+
+// ensureWriteSession binds the internal encoder to the stream on first structural write.
+// Call when writeDepth == 0 at the start of WriteObjectStart or WriteArrayStart.
+// When valueComplete is set (previous value just finished), writes a newline for NDJSON and does not clear the buffer.
+func (ise *IncrementalStreamEncoder) ensureWriteSession() {
+	if ise.config == nil {
+		ise.config = ConfigDefault()
+	}
+	enc := ise.enc
+	if ise.valueComplete {
+		ise.valueComplete = false
+		enc.writeByte('\n')
+		if enc.streamErr != nil {
+			ise.err = enc.streamErr
+			return
+		}
+		return // encoder already bound; buffer not cleared so we append next value after newline
+	}
+	ise.buf = ise.buf[:0]
+	enc.buf = ise.buf
+	enc.streamOut = ise.w
+	enc.streamThreshold = ise.flushThreshold
+	enc.config = ise.config
+	enc.depth = 0
+	enc.indentLevel = ise.writeIndentLevel
+	enc.ptrSeenCount = 0
+	enc.streamErr = nil
+	if enc.ptrSeen != nil {
+		for k := range enc.ptrSeen {
+			delete(enc.ptrSeen, k)
+		}
+	}
+}
+
+// writeArrayComma writes newline+indent before the first array element, or comma+newline+indent before subsequent elements.
+// Call before writing an array value; marks current frame as not first.
+func (ise *IncrementalStreamEncoder) writeArrayComma() bool {
+	if ise.err != nil {
+		return false
+	}
+	if ise.writeDepth <= 0 {
+		return false
+	}
+	frame := ise.writeStack[ise.writeDepth-1]
+	if (frame & 1) != 0 {
+		return false // object, not array
+	}
+	enc := ise.enc
+	if (frame & 2) != 0 {
+		// first array element: newline+indent only
+		ise.writeStack[ise.writeDepth-1] = writeFrameArrayNotFirst
+		enc.writeNewlineIndent()
+	} else {
+		enc.writeByte(',')
+		enc.writeNewlineIndent()
+	}
+	if enc.streamErr != nil {
+		ise.err = enc.streamErr
+		return false
+	}
+	return true
+}
+
+// WriteObjectStart writes '{' and pushes an object frame. Call WriteObjectField then value writers, then WriteObjectEnd.
+func (ise *IncrementalStreamEncoder) WriteObjectStart() error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth >= maxWriteDepth {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	if ise.writeDepth == 0 {
+		ise.ensureWriteSession()
+		if ise.err != nil {
+			return ise.err
+		}
+	}
+	ise.writeStack[ise.writeDepth] = writeFrameObjectFirst
+	ise.writeDepth++
+	ise.writeIndentLevel++
+	ise.enc.indentLevel = ise.writeIndentLevel
+	ise.enc.writeByte('{')
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// WriteObjectEnd writes newline+indent (if not first), '}', and pops the object frame.
+func (ise *IncrementalStreamEncoder) WriteObjectEnd() error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	frame := ise.writeStack[ise.writeDepth-1]
+	if (frame & 1) == 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.writeDepth--
+	ise.writeIndentLevel--
+	ise.enc.indentLevel = ise.writeIndentLevel
+	if (frame & 2) == 0 {
+		ise.enc.writeNewlineIndent()
+	}
+	ise.enc.writeByte('}')
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	if ise.writeDepth == 0 {
+		ise.buf = ise.enc.buf // sync so buffer growth is visible
+		ise.valueComplete = true
+	}
+	return nil
+}
+
+// WriteArrayStart writes '[' and pushes an array frame. Call value writers, then WriteArrayEnd.
+func (ise *IncrementalStreamEncoder) WriteArrayStart() error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth >= maxWriteDepth {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	if ise.writeDepth == 0 {
+		ise.ensureWriteSession()
+		if ise.err != nil {
+			return ise.err
+		}
+	}
+	ise.writeStack[ise.writeDepth] = writeFrameArrayFirst
+	ise.writeDepth++
+	ise.writeIndentLevel++
+	ise.enc.indentLevel = ise.writeIndentLevel
+	ise.enc.writeByte('[')
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// WriteArrayEnd writes newline+indent (if not first), ']', and pops the array frame.
+func (ise *IncrementalStreamEncoder) WriteArrayEnd() error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	frame := ise.writeStack[ise.writeDepth-1]
+	if (frame & 1) != 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.writeDepth--
+	ise.writeIndentLevel--
+	ise.enc.indentLevel = ise.writeIndentLevel
+	if (frame & 2) == 0 {
+		ise.enc.writeNewlineIndent()
+	}
+	ise.enc.writeByte(']')
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	if ise.writeDepth == 0 {
+		ise.buf = ise.enc.buf // sync so buffer growth is visible
+		ise.valueComplete = true
+	}
+	return nil
+}
+
+// WriteObjectField writes the object key and colon. Call once per field before writing the value.
+// If not the first field, writes ',' and newline+indent first.
+func (ise *IncrementalStreamEncoder) WriteObjectField(key string) error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	frame := ise.writeStack[ise.writeDepth-1]
+	if (frame & 1) == 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	enc := ise.enc
+	if (frame & 2) != 0 {
+		// first field: newline+indent before key
+		enc.writeNewlineIndent()
+	} else {
+		enc.writeByte(',')
+		enc.writeNewlineIndent()
+	}
+	ise.writeStack[ise.writeDepth-1] = writeFrameObjectNotFirst
+	if err := enc.encodeString(key); err != nil {
+		ise.err = err
+		return err
+	}
+	enc.writeColonSeparator()
+	if enc.streamErr != nil {
+		ise.err = enc.streamErr
+		return enc.streamErr
+	}
+	return nil
+}
+
+// WriteString writes a JSON string value. For array elements, writes comma+indent when not first.
+func (ise *IncrementalStreamEncoder) WriteString(s string) error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.writeArrayComma()
+	if ise.err != nil {
+		return ise.err
+	}
+	if err := ise.enc.encodeString(s); err != nil {
+		ise.err = err
+		return err
+	}
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// WriteInt64 writes a JSON number from int64. For array elements, writes comma+indent when not first.
+func (ise *IncrementalStreamEncoder) WriteInt64(i int64) error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.writeArrayComma()
+	if ise.err != nil {
+		return ise.err
+	}
+	if err := ise.enc.encodeInt(i); err != nil {
+		ise.err = err
+		return err
+	}
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// WriteUint64 writes a JSON number from uint64. For array elements, writes comma+indent when not first.
+func (ise *IncrementalStreamEncoder) WriteUint64(u uint64) error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.writeArrayComma()
+	if ise.err != nil {
+		return ise.err
+	}
+	if err := ise.enc.encodeUint(u); err != nil {
+		ise.err = err
+		return err
+	}
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// WriteFloat64 writes a JSON number from float64. For array elements, writes comma+indent when not first.
+func (ise *IncrementalStreamEncoder) WriteFloat64(f float64) error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.writeArrayComma()
+	if ise.err != nil {
+		return ise.err
+	}
+	if err := ise.enc.encodeFloat(f, false); err != nil {
+		ise.err = err
+		return err
+	}
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// WriteFloat32 writes a JSON number from float32. For array elements, writes comma+indent when not first.
+func (ise *IncrementalStreamEncoder) WriteFloat32(f float32) error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.writeArrayComma()
+	if ise.err != nil {
+		return ise.err
+	}
+	if err := ise.enc.encodeFloat(float64(f), true); err != nil {
+		ise.err = err
+		return err
+	}
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// WriteBool writes a JSON boolean. For array elements, writes comma+indent when not first.
+func (ise *IncrementalStreamEncoder) WriteBool(b bool) error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.writeArrayComma()
+	if ise.err != nil {
+		return ise.err
+	}
+	ise.enc.encodeBool(b)
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// WriteNull writes a JSON null. For array elements, writes comma+indent when not first.
+func (ise *IncrementalStreamEncoder) WriteNull() error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.writeArrayComma()
+	if ise.err != nil {
+		return ise.err
+	}
+	ise.enc.writeBytes(nullBytes)
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// WriteValue encodes v as JSON and appends it. For array elements, writes comma+indent when not first.
+// Prefer WriteString, WriteInt64, etc. on hot paths to avoid reflection.
+func (ise *IncrementalStreamEncoder) WriteValue(v interface{}) error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.writeArrayComma()
+	if ise.err != nil {
+		return ise.err
+	}
+	_, err := ise.enc.Encode(v)
+	if err != nil {
+		ise.err = err
+		return err
+	}
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// Flush writes any buffered data to the underlying io.Writer. Returns the first write error if any.
+func (ise *IncrementalStreamEncoder) Flush() error {
+	if ise.err != nil {
+		return ise.err
+	}
+	ise.enc.flushRemaining()
+	ise.buf = ise.enc.buf
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
 }
 
 // StreamDecoder reads and decodes JSON values from an input stream.
