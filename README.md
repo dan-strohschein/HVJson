@@ -507,6 +507,8 @@ data, err := hvjson.MarshalWithConfig(&user, config)
 
 ### Streaming API
 
+Streaming constructors are available at package level and on `*Config`: `hvjson.NewEncoder(w)`, `c.NewEncoder(w)`, `hvjson.NewIncrementalEncoder(w, flushThreshold)`, `c.NewIncrementalEncoder(w, flushThreshold)`, `hvjson.NewDecoder(r)`, `c.NewDecoder(r)`.
+
 #### `NewEncoder(w io.Writer) *StreamEncoder`
 Creates a streaming encoder that writes JSON to an io.Writer.
 
@@ -611,6 +613,7 @@ You can build one JSON value incrementally with the same SIMD encoding and incre
 
 **Structure:** `WriteObjectStart`, `WriteObjectEnd`, `WriteArrayStart`, `WriteArrayEnd`, `WriteObjectField(key string)`  
 **Values:** `WriteString(s)`, `WriteInt64(i)`, `WriteUint64(u)`, `WriteFloat64(f)`, `WriteFloat32(f)`, `WriteBool(b)`, `WriteNull()`, `WriteValue(v interface{})`  
+**Raw/separators:** `WriteRawBytes(b []byte)` — append pre-encoded JSON bytes (caller handles commas/formatting); `WriteMore()` — write a comma (e.g. before `WriteRawBytes` for object fields).  
 **Flush:** `Flush() error` — write any buffered bytes to the underlying writer.
 
 Use typed writers (`WriteString`, `WriteInt64`, etc.) on hot paths; `WriteValue(v)` uses reflection. Invalid sequences (e.g. `WriteObjectEnd` with empty stack) return `ErrInvalidWriteState`. After finishing a value, call `Flush()` if needed; writing a second value automatically emits a newline (NDJSON).
@@ -663,7 +666,7 @@ if err := dec.Decode(&result); err != nil {
 ---
 
 #### `(*StreamDecoder) Decode(v interface{}) error`
-Decodes the next JSON value from the stream.
+Decodes the next JSON value from the stream. Uses a pooled decoder and, when not already a `*bufio.Reader`, wraps the reader to reduce read syscalls. Skips whitespace (SIMD when enough buffer is available) and keeps the current value contiguous when refilling (bounded buffer growth; large buffers use the package buffer pool).
 
 **Parameters:**
 - `v` - Pointer to value to decode into
@@ -684,6 +687,27 @@ for {
     processUser(user)
 }
 ```
+
+---
+
+#### `(*StreamDecoder) More() bool`
+Reports whether there is another JSON value in the stream (after skipping whitespace). Use before calling `Decode` when you need to check for more values without decoding.
+
+**Example:**
+```go
+for dec.More() {
+    var v MyType
+    if err := dec.Decode(&v); err != nil {
+        log.Fatal(err)
+    }
+    process(v)
+}
+```
+
+---
+
+#### `(*StreamDecoder) Buffered() io.Reader`
+Returns a reader of the data remaining in the decoder's internal buffer. Useful when you need to pass the unconsumed stream to another reader.
 
 ---
 
@@ -711,6 +735,20 @@ var m map[string]interface{}
 dec.Decode(&m)
 num := m["value"].(hvjson.Number)
 i, _ := num.Int64()  // Precise integer conversion
+```
+
+---
+
+#### `(*StreamDecoder) UseInt64()`
+Configures decoder to unmarshal numbers into an `interface{}` as `int64` instead of `float64`. Useful when decoding into `map[string]interface{}` or generic structures.
+
+**Example:**
+```go
+dec := hvjson.NewDecoder(reader)
+dec.UseInt64()
+var m map[string]interface{}
+dec.Decode(&m)
+// m["count"] is int64(42) instead of float64(42)
 ```
 
 ---
@@ -906,6 +944,7 @@ Error codes include:
 - `ErrorTypeMismatch`: Type incompatibility
 - `ErrorStackOverflow`: Exceeded max depth
 - `ErrorInvalidUTF8`: UTF-8 validation failure
+- `ErrInvalidWriteState`: Invalid streaming write sequence (e.g. `WriteObjectEnd` with empty stack, or `Encode` during an active write session on `IncrementalStreamEncoder`)
 
 ## Architecture
 

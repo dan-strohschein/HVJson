@@ -599,6 +599,43 @@ func (ise *IncrementalStreamEncoder) WriteValue(v interface{}) error {
 	return nil
 }
 
+// WriteRawBytes writes pre-encoded raw bytes directly into the ISE buffer without escaping.
+// The bytes are assumed to be valid JSON (e.g. pre-encoded field fragments like `"name":value`).
+// Inherits the 64KB flush threshold. Does NOT handle comma/indent — caller is responsible.
+func (ise *IncrementalStreamEncoder) WriteRawBytes(b []byte) error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.enc.writeBytes(b)
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
+// WriteMore writes a comma separator into the buffer.
+// Used before WriteRawBytes to separate pre-encoded field fragments in objects.
+func (ise *IncrementalStreamEncoder) WriteMore() error {
+	if ise.err != nil {
+		return ise.err
+	}
+	if ise.writeDepth <= 0 {
+		ise.err = ErrInvalidWriteState
+		return ErrInvalidWriteState
+	}
+	ise.enc.writeByte(',')
+	if ise.enc.streamErr != nil {
+		ise.err = ise.enc.streamErr
+		return ise.err
+	}
+	return nil
+}
+
 // Flush writes any buffered data to the underlying io.Writer. Returns the first write error if any.
 func (ise *IncrementalStreamEncoder) Flush() error {
 	if ise.err != nil {
